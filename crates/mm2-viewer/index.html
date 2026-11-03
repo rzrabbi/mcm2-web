@@ -380,7 +380,19 @@
 
     // What the game needs before any game file is read. A failed check is listed above
     // the folder picker, which stays off, so the page never starts a game it cannot draw.
+    // Phones and tablets: the game needs a keyboard or gamepad and a desktop-class GPU.
+    // iPadOS reports itself as a Mac, so a touch screen on a "Mac" counts too.
+    function isMobileDevice() {
+      const ua = navigator.userAgent;
+      if (navigator.userAgentData && navigator.userAgentData.mobile) return true;
+      if (/Android|iPhone|iPad|iPod|Mobile|Windows Phone|webOS|BlackBerry|Opera Mini|IEMobile/i.test(ua)) return true;
+      return /Macintosh/.test(ua) && navigator.maxTouchPoints > 1;
+    }
     async function preflight() {
+      if (isMobileDevice()) {
+        return [{ title: "Unsupported device", code: "DEVICE-MOBILE",
+          text: "This game does not run on phones or tablets. Its graphics need WebGPU, which most mobile browsers do not offer or run too slowly, and the game has no touch controls: it needs a keyboard or gamepad. Open this page on a desktop or laptop in a recent Chrome or Edge, or Firefox on Windows." }];
+      }
       if (!window.isSecureContext) {
         return [{ title: "Secure page", code: "PAGE-NOT-SECURE",
           text: "WebGPU only works on https or localhost pages, and this page is neither." }];
