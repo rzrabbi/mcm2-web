@@ -65,6 +65,8 @@
       color: #eef1ff; text-shadow: 0 2px 0 #55609a, 0 0 14px #2f55d8, 0 0 28px #1d3aa8; }
     #setup h1 .sub { display: block; margin-top: .45rem; font-size: clamp(.85rem, 3.2vw, 1.1rem); font-weight: 700; letter-spacing: .5em;
       color: var(--blue); text-shadow: 0 0 10px #2f55d8aa; }
+    /* The logo is drawn by drawLogo(); the canvas has room round the text for the glow. */
+    #logo { display: block; width: calc(100% + 36px); height: 100px; margin: -18px -18px 0; }
     #setup .lead { margin: .9rem 0 1.5rem; color: var(--muted); }
     /* The panel: a steel frame round a navy screen, like the menu's windows. */
     #setup .card { padding: 6px; border-radius: 3px; border-top: 2px solid #f2f4ff; border-left: 2px solid #e1e5f7;
@@ -124,6 +126,18 @@
     #setup .checks { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem .9rem; margin-top: 1.1rem; font-size: .9rem; }
     #setup .checks label { display: grid; grid-template-columns: auto 1fr; column-gap: .45rem; align-items: start; }
     #setup .gfx .hint { margin-top: .9rem; }
+    #setup .game-gfx { margin-top: 1.1rem; }
+    #setup h3 { margin: 0; font-size: .8rem; letter-spacing: .2em; text-transform: uppercase; color: var(--blue); }
+    #setup .gfx .hint.tiny { margin-top: .7rem; font-size: .7rem; line-height: 1.35; }
+    /* The Defaults buttons: the text just brightens under the pointer. */
+    #setup .reset { transition: color .15s; }
+    #setup .reset:hover { color: #fff1b8; }
+    /* In Enhanced mode the one Defaults button below resets the game's options too. */
+    #setup .gfx:has(#gfx-on:checked) #gg-reset { display: none; }
+    #setup .quality { display: flex; flex-direction: column; gap: .2rem; margin-top: 1rem; font-size: .85rem; color: var(--muted); }
+    #setup .quality output { color: var(--text); }
+    #setup .quality .ends { display: grid; grid-template-columns: auto 1fr auto; gap: .5rem; align-items: center; }
+    #setup .quality input[type=range] { width: 100%; }
     @media (max-width: 30rem) { #setup .modes, #setup .fields, #setup .checks { grid-template-columns: 1fr; } }
     #fetching { position: fixed; left: 50%; bottom: 1rem; transform: translateX(-50%); padding: .4rem .8rem;
       background: #000c; border-radius: 4px; display: none; pointer-events: none; }
@@ -131,7 +145,7 @@
 </head>
 <body>
   <div id="setup"><main class="wrap">
-    <h1><span class="game">Motocross Madness 2</span><span class="sub">On Web</span></h1>
+    <canvas id="logo" role="img" aria-label="MCM 2 On Web"></canvas>
     <p class="lead">Play in your browser with your own copy of the game. Nothing is uploaded.</p>
 
     <div id="warn"></div>
@@ -155,6 +169,21 @@
           <span><b>Original</b></span></label>
         <label><input type="radio" name="gfx-mode" value="enhanced" id="gfx-on" />
           <span><b>Enhanced</b></span></label>
+      </div>
+      <div class="game-gfx">
+        <h3>Game settings</h3>
+        <div class="checks">
+          <label><input type="checkbox" id="gg-shadows" /><span>Shadows</span></label>
+          <label><input type="checkbox" id="gg-particles" /><span>Particle Systems</span></label>
+          <label><input type="checkbox" id="gg-sky" /><span>Sky</span></label>
+        </div>
+        <label class="quality">Overall Graphics Quality <output id="gg-quality-n"></output>
+          <span class="ends"><small>−</small>
+            <input type="range" id="gg-quality" min="0" max="9" step="1" />
+            <small>+</small></span></label>
+        <p class="hint tiny">The slider sets the view distance: how far you can see before the fog. These are the game's own
+          Graphics options, kept in your profile. Change them here or in the game's Options.</p>
+        <button id="gg-reset" class="link reset">Defaults</button>
       </div>
       <div id="gfx-opts" hidden>
         <div class="fields">
@@ -188,7 +217,7 @@
         </div>
         <div id="gfx-list" class="checks"></div>
         <p class="hint">A quality preset sets the options above and below; change them after. In a race, F3 switches between this and the original look.</p>
-        <button id="gfx-reset" class="link">Defaults</button>
+        <button id="gfx-reset" class="link reset">Defaults</button>
       </div>
     </div></section>
 
@@ -835,9 +864,96 @@
       $("gfx").hidden = false;
     }
 
+    // The page's heading, drawn with the menu's look: heavy italic capitals in pale blue,
+    // a steel drop line under them and a blue glow, then the spaced light-blue subtitle.
+    function drawLogo() {
+      const canvas = document.getElementById("logo");
+      const ctx = canvas.getContext("2d");
+      const pad = 18, dpr = window.devicePixelRatio || 1;
+      const width = canvas.clientWidth;
+      const main = Math.round(Math.min(64, Math.max(40, innerWidth * 0.12)));
+      const sub = Math.min(17.6, Math.max(13.6, innerWidth * 0.032));
+      const height = Math.ceil(pad + main + sub * 0.45 + sub * 1.9 + pad * 0.5);
+      canvas.style.height = height + "px";
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+      ctx.textBaseline = "alphabetic";
+      const family = 'Arial, "Liberation Sans", Helvetica, sans-serif';
+      // Each layer of a text-shadow list: [colour, blur, offset down], the lowest first.
+      const draw = (text, x, y, fill, layers) => {
+        for (const [colour, blur, dy] of layers) {
+          ctx.shadowColor = colour; ctx.shadowBlur = blur; ctx.shadowOffsetY = dy;
+          ctx.fillText(text, x, y);
+        }
+        ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+        ctx.fillStyle = fill;
+        ctx.fillText(text, x, y);
+      };
+      ctx.font = `italic 900 ${main}px ${family}`;
+      if ("letterSpacing" in ctx) ctx.letterSpacing = "-0.01em";
+      ctx.fillStyle = "#eef1ff";
+      const top = pad + main * 0.86;
+      draw("MCM 2", pad, top, "#eef1ff", [["#1d3aa8", 28, 0], ["#2f55d8", 14, 0], ["#55609a", 0, 2]]);
+      ctx.font = `italic 700 ${sub}px ${family}`;
+      if ("letterSpacing" in ctx) ctx.letterSpacing = "0.5em";
+      ctx.fillStyle = "#8db6ff";
+      draw("ON WEB", pad, top + sub * 0.45 + sub * 1.25, "#8db6ff", [["#2f55d8aa", 10, 0]]);
+    }
+    drawLogo();
+    addEventListener("resize", drawLogo);
+
+    // The game's own Graphics options: Shadows, Particle Systems, Sky and the overall
+    // quality. They are queued in the engine until the player has a profile, then go into
+    // it; the engine is asked back every second so a change made in the game shows here.
+    // The last choice is kept in this browser for the first profile.
+    function setupGameGraphics(wasm) {
+      const $ = (id) => document.getElementById(id);
+      const [shadows, particles, sky, quality] = ["gg-shadows", "gg-particles", "gg-sky", "gg-quality"].map($);
+      const read = () => ({ shadows: shadows.checked, particles: particles.checked, sky: sky.checked, quality: Number(quality.value) });
+      const show = (c) => {
+        shadows.checked = c.shadows; particles.checked = c.particles; sky.checked = c.sky;
+        quality.value = c.quality;
+        $("gg-quality-n").textContent = Number(c.quality) + 1;
+      };
+      const keep = () => { try { localStorage.setItem("mm2-game-graphics", JSON.stringify(read())); } catch (e) {} };
+      const send = () => {
+        const c = read();
+        wasm.set_graphics(c.shadows, c.particles, c.sky, c.quality);
+        $("gg-quality-n").textContent = c.quality + 1;
+        keep();
+      };
+      // The game's own defaults, as a new profile has them.
+      const DEFAULTS = { shadows: true, particles: true, sky: true, quality: 6 };
+      let first = { ...DEFAULTS };
+      let had = false;
+      try {
+        const kept = JSON.parse(localStorage.getItem("mm2-game-graphics") || "null");
+        if (kept) { first = { ...first, ...kept }; had = true; }
+      } catch (e) {}
+      show(first);
+      // Both Defaults buttons put the game's own options back as well.
+      const reset = () => { show(DEFAULTS); send(); };
+      $("gg-reset").addEventListener("click", reset);
+      $("gfx-reset").addEventListener("click", reset);
+      // Only a choice the player made goes in ahead of the first profile.
+      if (had) send();
+      $("gfx").addEventListener("input", (e) => { if (e.target.id && e.target.id.startsWith("gg-")) send(); });
+      setInterval(() => {
+        try {
+          const g = JSON.parse(wasm.game_graphics());
+          if (!g.live || g.pending) return;
+          show(g);
+          keep();
+        } catch (e) {}
+      }, 1000);
+    }
+
     window.addEventListener("TrunkApplicationStarted", async () => {
       const wasm = window.wasmBindings;
       setupGraphics(wasm);
+      setupGameGraphics(wasm);
       const dev = new URLSearchParams(location.search).get("game");
       // The kept menu text is forgotten, and a development load (?game=) is left for the picker.
       change.addEventListener("click", async () => {

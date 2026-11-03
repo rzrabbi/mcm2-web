@@ -196,6 +196,33 @@ mod web {
         ))
     }
 
+    /// Sets the Graphics page's Shadows, Particle Systems and Sky boxes and
+    /// the overall quality (0 to 9) from the page. They wait until the
+    /// player has a profile, then go into it, and into the race if one is on.
+    #[wasm_bindgen]
+    pub fn set_graphics(shadows: bool, particles: bool, sky: bool, quality: u32) {
+        crate::platform::page_graphics::set(crate::platform::page_graphics::Choice {
+            shadows,
+            particles,
+            sky,
+            quality: quality.min(9),
+        });
+    }
+
+    /// What the player's profile holds for those four, as JSON: `live` is
+    /// false while there is no profile (the other fields are then absent),
+    /// and `pending` is true while the page's choice has not gone in yet.
+    #[wasm_bindgen]
+    pub fn game_graphics() -> String {
+        match crate::platform::page_graphics::shown() {
+            (Some(c), pending) => format!(
+                r#"{{"live":true,"pending":{pending},"shadows":{},"particles":{},"sky":{},"quality":{}}}"#,
+                c.shadows, c.particles, c.sky, c.quality
+            ),
+            (None, pending) => format!(r#"{{"live":false,"pending":{pending}}}"#),
+        }
+    }
+
     /// Opens the game's menus, once the files are in. `enhanced` is what
     /// the desktop takes after `--enhanced=` (empty for all the defaults),
     /// or none for the game's own drawing, as without the flag.
@@ -4253,14 +4280,54 @@ impl App {
         if let Err(e) = user.store.save(&user.profile) {
             eprintln!("could not save the profile: {e}");
         }
+        self.refog(q);
+        if let Some((ui, hud)) = &mut self.hud {
+            hud.say(&format!("{} : {}", ui.lang(0x14c4), q + 1));
+        }
+    }
+
+    /// Redraws the fog and the draw distance of the race at quality `q`.
+    fn refog(&mut self, q: u32) {
         if let (Some(state), Some(track)) = (&mut self.state, &self.track) {
             if let (Some(renderer), Some((visibility, haziness))) = (&mut state.renderer, track.haze) {
                 renderer.set_visibility(q, visibility, haziness);
             }
         }
-        if let Some((ui, hud)) = &mut self.hud {
-            hud.say(&format!("{} : {}", ui.lang(0x14c4), q + 1));
+    }
+
+    /// The start page's Graphics choices (`platform::page_graphics`): once
+    /// the player has a profile they go into it, its settings and the race
+    /// on screen, and the profile's own are noted for the page to show.
+    fn sync_page_graphics(&mut self) {
+        use platform::page_graphics as page;
+        let Some(f) = &mut self.front else { return };
+        let named = !f.user().profile.name.is_empty();
+        if let Some(c) = page::take(named) {
+            let user = f.user_mut();
+            let g = &mut user.profile.graphics;
+            (g.shadows, g.particles, g.sky, g.terrain) = (c.shadows, c.particles, c.sky, c.quality);
+            for key in screens::options::DETAILS {
+                user.settings.set(key, &c.quality.to_string());
+            }
+            user.save_settings();
+            if let Err(e) = user.store.save(&user.profile) {
+                eprintln!("could not save the profile: {e}");
+            }
+            if let Some((_, hud)) = &mut self.hud {
+                (hud.show.shadows, hud.show.particles, hud.show.sky) = (c.shadows, c.particles, c.sky);
+            }
+            self.refog(c.quality);
         }
+        let Some(f) = &self.front else { return };
+        let g = &f.user().profile.graphics;
+        page::publish(
+            (!f.user().profile.name.is_empty()).then_some(page::Choice {
+                shadows: g.shadows,
+                particles: g.particles,
+                sky: g.sky,
+                quality: g.terrain,
+            }),
+        );
     }
 
     fn ctrl(&self) -> bool {
@@ -4728,6 +4795,7 @@ impl App {
     }
 
     fn redraw(&mut self) {
+        self.sync_page_graphics();
         let now = self.start.elapsed().as_secs_f32();
         let progress = self.loading.as_ref().map_or(1.0, |_| {
             let steps = LOAD_STEPS.load(std::sync::atomic::Ordering::Relaxed).min(LOAD_TOTAL);

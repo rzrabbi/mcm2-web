@@ -410,6 +410,65 @@ pub const DISPLAY_MODES: bool = !cfg!(target_arch = "wasm32");
 /// does here, set the view distance; the desktop shows the page as it is.
 pub const VIEW_DISTANCE_NOTE: bool = cfg!(target_arch = "wasm32");
 
+/// The Graphics page's choices (Shadows, Particle Systems, Sky and the overall
+/// quality), which the browser's start page can set before the player has a
+/// profile and keep in step with the game afterwards. The desktop never
+/// sets one, so nothing changes there.
+pub mod page_graphics {
+    use std::sync::Mutex;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Choice {
+        pub shadows: bool,
+        pub particles: bool,
+        pub sky: bool,
+        /// The overall graphic quality, 0 to 9.
+        pub quality: u32,
+    }
+
+    struct State {
+        /// What the page asked for and the game has not taken yet: it waits
+        /// until the player has a profile to keep it in.
+        wanted: Option<Choice>,
+        /// What the player's profile holds now, none without a profile.
+        shown: Option<Choice>,
+    }
+
+    static STATE: Mutex<State> = Mutex::new(State { wanted: None, shown: None });
+
+    fn state() -> std::sync::MutexGuard<'static, State> {
+        STATE.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The page's choice, queued until the game can take it.
+    pub fn set(c: Choice) {
+        state().wanted = Some(c);
+    }
+
+    /// The queued choice, once there is a profile to keep it in.
+    pub fn take(has_profile: bool) -> Option<Choice> {
+        if has_profile {
+            state().wanted.take()
+        } else {
+            None
+        }
+    }
+
+    /// Notes what the profile holds, for the page to show.
+    pub fn publish(c: Option<Choice>) {
+        let mut s = state();
+        if s.shown != c {
+            s.shown = c;
+        }
+    }
+
+    /// The profile's choice and whether the page's is still queued.
+    pub fn shown() -> (Option<Choice>, bool) {
+        let s = state();
+        (s.shown, s.wanted.is_some())
+    }
+}
+
 static SCREEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Notes the size of the window's drawing surface, in pixels.
