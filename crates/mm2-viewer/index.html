@@ -139,6 +139,25 @@
     #setup .quality .ends { display: grid; grid-template-columns: auto 1fr auto; gap: .5rem; align-items: center; }
     #setup .quality input[type=range] { width: 100%; }
     @media (max-width: 30rem) { #setup .modes, #setup .fields, #setup .checks { grid-template-columns: 1fr; } }
+    /* The Profiles panel: one row a profile, with its name, last update and size. */
+    #setup .saves { margin-top: 1.2rem; }
+    #setup .saves .hint.first { margin: 0 0 .9rem; }
+    #setup .plist { list-style: none; margin: 0; padding: 0; display: grid; gap: .5rem; }
+    #setup .plist li { display: flex; align-items: center; gap: .8rem; padding: .55rem .7rem; border: 1px solid #1d2e6a;
+      border-radius: 2px; background: #060f30; }
+    #setup .plist li.empty { display: block; color: var(--muted); border-style: dashed; }
+    #setup .plist .who { flex: 1; min-width: 0; }
+    #setup .plist .who b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+    #setup .plist .who small { color: var(--muted); font-size: .8rem; }
+    #setup .plist .link { display: inline; flex: none; margin: 0; }
+    #setup .plist .link.danger { color: #ff9c9c; }
+    #setup .saves .row { display: flex; gap: .6rem; margin-top: 1rem; }
+    #setup .saves .row .btn { margin-top: 0; padding: .6rem .5rem; font-size: .85rem; }
+    #setup .saves #saves-status { min-height: 1.2em; margin-top: .6rem; }
+    #setup .hint.err { color: #f88; }
+    #setup .saves .important { margin: 0 0 .9rem; padding: .5rem .7rem; font-size: .85rem; line-height: 1.4; color: #ffe9a6;
+      background: #2a2208; border: 1px solid var(--gold-lo); border-left: 3px solid var(--gold); border-radius: 2px; }
+    #setup .saves .important b { color: #ffd966; text-transform: uppercase; letter-spacing: .1em; }
     #fetching { position: fixed; left: 50%; bottom: 1rem; transform: translateX(-50%); padding: .4rem .8rem;
       background: #000c; border-radius: 4px; display: none; pointer-events: none; }
   </style>
@@ -219,6 +238,22 @@
         <p class="hint">A quality preset sets the options above and below; change them after. In a race, F3 switches between this and the original look.</p>
         <button id="gfx-reset" class="link reset">Defaults</button>
       </div>
+    </div></section>
+
+    <section id="saves" class="card saves"><div class="screen">
+      <h2>Profiles</h2>
+      <p class="hint first">Your profiles, settings and records are kept in this browser. Clearing the browser's site data erases
+        them, so export a backup to keep them safe.</p>
+      <p class="important"><b>Important:</b> leave the game with the X on the main menu. Closing the tab (instead of
+        using the X) right after a save can still lose that save.</p>
+      <ul id="saves-list" class="plist"></ul>
+      <p id="saves-note" class="hint"></p>
+      <div class="row">
+        <button id="saves-export" class="btn" disabled>Export all</button>
+        <button id="saves-import" class="btn" disabled>Import backup</button>
+      </div>
+      <input id="saves-file" type="file" accept=".zip,application/zip" />
+      <div id="saves-status" class="hint"></div>
     </div></section>
 
     <details>
@@ -304,43 +339,453 @@
     // What the player saves (profiles, settings, replays, ghosts) is kept in
     // IndexedDB under its path, and handed back before the game starts. The
     // engine calls `mm2Persist` / `mm2Forget` as it writes and deletes.
+    // `meta` holds when each file was last written (ms since 1970), for the
+    // profile list on the start page.
+    // An open tab of an older page, which holds the store at its old version, keeps the
+    // upgrade waiting: say so, rather than seem to hang (it goes on once that tab closes).
+    let savesBlocked = false;
     const saves = new Promise((resolve) => {
       try {
-        const open = indexedDB.open("mm2-saves", 1);
-        open.onupgradeneeded = () => open.result.createObjectStore("files");
-        open.onsuccess = () => resolve(open.result);
+        const open = indexedDB.open("mm2-saves", 2);
+        open.onupgradeneeded = () => {
+          const db = open.result;
+          if (!db.objectStoreNames.contains("files")) db.createObjectStore("files");
+          if (!db.objectStoreNames.contains("meta")) db.createObjectStore("meta");
+        };
+        open.onblocked = () => {
+          savesBlocked = true;
+          const text = "Your saves are open in another tab of this page. Close that tab to go on.";
+          document.getElementById("saves-note").textContent = text;
+          document.getElementById("status").textContent = text;
+        };
+        open.onsuccess = () => {
+          // Another tab with a newer page wants to upgrade: let it.
+          open.result.onversionchange = () => open.result.close();
+          if (savesBlocked) document.getElementById("status").textContent = "";
+          resolve(open.result);
+        };
         open.onerror = () => resolve(null);
       } catch (e) { resolve(null); }
     });
+    // Writes not yet stored; quitting waits for them.
+    const writing = new Set();
+    // Runs `f(files, meta)` in one transaction; true once it has been stored.
     const inSaves = async (mode, f) => {
       const db = await saves;
-      if (!db) return;
-      return new Promise((resolve) => {
-        const tx = db.transaction("files", mode);
-        f(tx.objectStore("files"));
-        tx.oncomplete = tx.onerror = tx.onabort = () => resolve();
+      if (!db) return false;
+      const done = new Promise((resolve) => {
+        let tx;
+        try {
+          tx = db.transaction(["files", "meta"], mode);
+          f(tx.objectStore("files"), tx.objectStore("meta"));
+        } catch (e) { resolve(false); return; }
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = tx.onabort = () => resolve(false);
       });
+      if (mode === "readwrite") {
+        writing.add(done);
+        done.then(() => writing.delete(done));
+      }
+      return done;
     };
+    // Resolves when every write so far is stored, or after `ms` at most.
+    const savesSettled = (ms) => Promise.race([Promise.all([...writing]), new Promise((r) => setTimeout(r, ms))]);
+    // Every key under a folder: "0" is the character after "/".
+    const folderRange = (path) => IDBKeyRange.bound(path + "/", path + "0", false, true);
     // The engine's view of the bytes is only good during the call: copy.
-    window.mm2Persist = (path, data) => { const copy = data.slice(); inSaves("readwrite", (s) => s.put(copy, path)); };
-    window.mm2Forget = (path, folder) => inSaves("readwrite", (s) => {
-      if (!folder) s.delete(path);
-      else s.delete(IDBKeyRange.bound(path + "/", path + "0", false, true));  // "0" is the character after "/"
+    window.mm2Persist = (path, data) => {
+      const copy = data.slice();
+      inSaves("readwrite", (files, meta) => { files.put(copy, path); meta.put(Date.now(), path); })
+        .then((ok) => { if (!ok) console.warn(`The browser would not keep ${path} (out of space, or storage blocked).`); });
+    };
+    window.mm2Forget = (path, folder) => inSaves("readwrite", (files, meta) => {
+      if (!folder) { files.delete(path); meta.delete(path); }
+      else { files.delete(folderRange(path)); meta.delete(folderRange(path)); }
     });
+    // False when the saves could not all be read: the game is then not started, so it
+    // cannot save over the ones it did not get.
     async function restoreSaves(wasm) {
       const db = await saves;
-      if (!db) return;
-      await new Promise((resolve) => {
-        const req = db.transaction("files").objectStore("files").openCursor();
+      if (!db) return true;
+      const ok = await new Promise((resolve) => {
+        let req;
+        try { req = db.transaction("files").objectStore("files").openCursor(); } catch (e) { resolve(false); return; }
         req.onsuccess = () => {
           const c = req.result;
-          if (!c) return resolve();
+          if (!c) return resolve(true);
           wasm.add_saved_file(c.key, c.value);
           c.continue();
         };
-        req.onerror = () => resolve();
+        req.onerror = () => resolve(false);
       });
       navigator.storage?.persist?.();
+      return ok;
+    }
+
+    // The Profiles panel: lists the profiles kept in IndexedDB, deletes them, and
+    // writes them to / reads them from a backup file, so they outlive a clearing of the
+    // browser's data. The game only reads the saves when Start is pressed
+    // (`restoreSaves`), so whatever is changed here is what the game then sees.
+    const PROFILE_DIR = "mm2-user/profile/";
+    const MAX_BACKUP = 300 * 1024 * 1024;
+    const MAX_UNPACKED = 600 * 1024 * 1024;
+    const pad2 = (n) => String(n).padStart(2, "0");
+    // The stamp in a backup's name: 2026-11-04_15-30, the local date and time.
+    const stamp = () => {
+      const d = new Date();
+      return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}_${pad2(d.getHours())}-${pad2(d.getMinutes())}`;
+    };
+    const sizeText = (n) => (n < 1024 * 1024 ? Math.max(1, Math.round(n / 1024)) + " KB" : (n / 1024 / 1024).toFixed(1) + " MB");
+    const timeText = (t) => (t ? new Date(t).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "unknown");
+    // A path a backup may bring in: inside the saves folder, with no way out of it. The
+    // two folders the game makes are never files.
+    function okSavePath(p) {
+      if (typeof p !== "string" || p.length > 300 || !p.startsWith("mm2-user/") || /[\\\u0000-\u001f]/.test(p)) return false;
+      const parts = p.split("/");
+      if (!parts.every((s) => s && s !== "." && s !== "..")) return false;
+      return parts.length > 2 || !/^(profile|procircuit|record)$/i.test(parts[1]);
+    }
+    // A profile's Pro Circuit careers are kept apart from it, in `procircuit/<name>/`.
+    const CAREER_DIR = "mm2-user/procircuit/";
+    // The profile a saved file belongs to: the folder it is in under `profile/` or
+    // `procircuit/`; null for anything else (settings, records, replays).
+    function ownerOf(path) {
+      const dir = path.startsWith(PROFILE_DIR) ? PROFILE_DIR : path.startsWith(CAREER_DIR) ? CAREER_DIR : null;
+      if (!dir) return null;
+      const parts = path.slice(dir.length).split("/");
+      return parts.length > 1 && parts[0] ? parts[0] : null;
+    }
+
+    // Every saved file with its size and when it was written, or null with no storage.
+    async function listSaves() {
+      const db = await saves;
+      if (!db) return null;
+      return new Promise((resolve) => {
+        const tx = db.transaction(["files", "meta"]);
+        const files = [], times = new Map();
+        const f = tx.objectStore("files").openCursor();
+        f.onsuccess = () => {
+          const c = f.result;
+          if (!c) return;
+          files.push({ path: c.key, size: c.value.byteLength });
+          c.continue();
+        };
+        const m = tx.objectStore("meta").openCursor();
+        m.onsuccess = () => {
+          const c = m.result;
+          if (!c) return;
+          times.set(c.key, c.value);
+          c.continue();
+        };
+        tx.oncomplete = () => resolve({ files, times });
+        tx.onerror = tx.onabort = () => resolve(null);
+      });
+    }
+    // The profiles there are (name, every file of theirs, bytes, newest write), and the
+    // rest of the saves. A profile is a folder under `profile/`; its careers go with it.
+    function groupSaves({ files, times }) {
+      const profiles = new Map();
+      const other = { count: 0, size: 0 };
+      for (const f of files) {
+        const name = f.path.startsWith(PROFILE_DIR) ? ownerOf(f.path) : null;
+        if (name && !profiles.has(name.toLowerCase())) profiles.set(name.toLowerCase(), { name, keys: [], size: 0, time: 0 });
+      }
+      for (const f of files) {
+        const name = ownerOf(f.path);
+        const p = name && profiles.get(name.toLowerCase());
+        if (!p) { other.count++; other.size += f.size; continue; }
+        p.keys.push(f.path);
+        p.size += f.size;
+        p.time = Math.max(p.time, times.get(f.path) || 0);
+      }
+      const list = [...profiles.values()].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+      return { list, other };
+    }
+    // A backup is a zip laid out as the desktop viewer's save folder (`settings.ini`,
+    // `profile/<name>/<name>.prf`, `Record/...`), so it unpacks straight into
+    // %APPDATA%\MM2 (or the platform's equivalent), and a zip of that folder imports here.
+    // Files are stored, not squeezed: the writer needs no library. The reader also takes
+    // zips from other tools, which deflate (the browser inflates them).
+    const crcTable = (() => {
+      const t = new Uint32Array(256);
+      for (let n = 0; n < 256; n++) {
+        let c = n;
+        for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+        t[n] = c >>> 0;
+      }
+      return t;
+    })();
+    const crc32 = (u8) => {
+      let c = 0xffffffff;
+      for (let i = 0; i < u8.length; i++) c = crcTable[(c ^ u8[i]) & 0xff] ^ (c >>> 8);
+      return (c ^ 0xffffffff) >>> 0;
+    };
+    const dosTime = (ms) => {
+      const d = new Date(ms || Date.now());
+      const y = Math.min(2107, Math.max(1980, d.getFullYear()));
+      return [(d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), ((y - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate()];
+    };
+    const fromDosTime = (time, date) => new Date(1980 + (date >> 9), ((date >> 5) & 15) - 1, date & 31, time >> 11, (time >> 5) & 63, (time & 31) * 2).getTime();
+    // Entries are {name, time, data}; gives the zip's Blob.
+    function makeZip(entries) {
+      const enc = new TextEncoder();
+      const parts = [], central = [];
+      let offset = 0;
+      for (const e of entries) {
+        const name = enc.encode(e.name), crc = crc32(e.data), [t, d] = dosTime(e.time);
+        const local = new DataView(new ArrayBuffer(30));
+        local.setUint32(0, 0x04034b50, true); local.setUint16(4, 20, true); local.setUint16(6, 0x0800, true);
+        local.setUint16(8, 0, true); local.setUint16(10, t, true); local.setUint16(12, d, true);
+        local.setUint32(14, crc, true); local.setUint32(18, e.data.length, true); local.setUint32(22, e.data.length, true);
+        local.setUint16(26, name.length, true); local.setUint16(28, 0, true);
+        const head = new DataView(new ArrayBuffer(46));
+        head.setUint32(0, 0x02014b50, true); head.setUint16(4, 20, true); head.setUint16(6, 20, true); head.setUint16(8, 0x0800, true);
+        head.setUint16(10, 0, true); head.setUint16(12, t, true); head.setUint16(14, d, true);
+        head.setUint32(16, crc, true); head.setUint32(20, e.data.length, true); head.setUint32(24, e.data.length, true);
+        head.setUint16(28, name.length, true); head.setUint32(42, offset, true);
+        parts.push(local, name, e.data);
+        central.push(head, name);
+        offset += 30 + name.length + e.data.length;
+      }
+      const size = central.reduce((n, p) => n + (p.byteLength ?? p.length), 0);
+      const end = new DataView(new ArrayBuffer(22));
+      end.setUint32(0, 0x06054b50, true); end.setUint16(8, entries.length, true); end.setUint16(10, entries.length, true);
+      end.setUint32(12, size, true); end.setUint32(16, offset, true);
+      return new Blob([...parts, ...central, end], { type: "application/zip" });
+    }
+    const inflateRaw = async (u8) => new Uint8Array(await new Response(
+      new Blob([u8]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer());
+    // The files in a zip, as {name, time, data}; stored or deflated, checked by CRC.
+    async function readZip(buf) {
+      const bad = (why) => new Error("That zip cannot be read (" + why + ").");
+      const v = new DataView(buf), u8 = new Uint8Array(buf);
+      let end = -1;
+      for (let i = buf.byteLength - 22; i >= Math.max(0, buf.byteLength - 22 - 65535); i--) {
+        if (v.getUint32(i, true) === 0x06054b50) { end = i; break; }
+      }
+      if (end < 0) throw bad("no directory");
+      const count = v.getUint16(end + 10, true);
+      let p = v.getUint32(end + 16, true), total = 0;
+      const out = [], dec = new TextDecoder();
+      for (let n = 0; n < count; n++) {
+        if (p + 46 > buf.byteLength || v.getUint32(p, true) !== 0x02014b50) throw bad("damaged directory");
+        const flags = v.getUint16(p + 8, true), method = v.getUint16(p + 10, true);
+        const time = v.getUint16(p + 12, true), date = v.getUint16(p + 14, true);
+        const crc = v.getUint32(p + 16, true), csize = v.getUint32(p + 20, true), usize = v.getUint32(p + 24, true);
+        const nameLen = v.getUint16(p + 28, true), extra = v.getUint16(p + 30, true), comment = v.getUint16(p + 32, true);
+        const at = v.getUint32(p + 42, true);
+        const name = dec.decode(u8.subarray(p + 46, p + 46 + nameLen)).replace(/\\/g, "/");
+        p += 46 + nameLen + extra + comment;
+        if (name.endsWith("/")) continue; // a folder
+        if (flags & 1) throw bad("it is encrypted");
+        if (csize === 0xffffffff || usize === 0xffffffff || at === 0xffffffff) throw bad("zip64 is not supported");
+        if (method !== 0 && method !== 8) throw bad("an unsupported way of packing " + name);
+        total += usize;
+        if (total > MAX_UNPACKED) throw bad("it unpacks too big");
+        if (at + 30 > buf.byteLength || v.getUint32(at, true) !== 0x04034b50) throw bad("damaged file entry");
+        const start = at + 30 + v.getUint16(at + 26, true) + v.getUint16(at + 28, true);
+        if (start + csize > buf.byteLength) throw bad("cut short");
+        const raw = u8.subarray(start, start + csize);
+        const data = method === 0 ? raw.slice() : await inflateRaw(raw);
+        if (data.length !== usize || crc32(data) !== crc) throw bad(name + " is damaged");
+        out.push({ name, time: fromDosTime(time, date), data });
+      }
+      return out;
+    }
+
+    // The saved files `match` accepts, with bytes, as a zip download named `fileName`.
+    async function exportSaves(match, fileName) {
+      const db = await saves;
+      if (!db) throw new Error("This browser is not keeping saves.");
+      const entries = await new Promise((resolve, reject) => {
+        const tx = db.transaction(["files", "meta"]);
+        const out = [], times = new Map();
+        const m = tx.objectStore("meta").openCursor();
+        m.onsuccess = () => { const c = m.result; if (c) { times.set(c.key, c.value); c.continue(); } };
+        const f = tx.objectStore("files").openCursor();
+        f.onsuccess = () => {
+          const c = f.result;
+          if (!c) return;
+          if (match(c.key)) out.push({ name: c.key.slice("mm2-user/".length), time: times.get(c.key) || 0, data: c.value });
+          c.continue();
+        };
+        tx.oncomplete = () => resolve(out);
+        tx.onerror = tx.onabort = () => reject(tx.error || new Error("Could not read the saves."));
+      });
+      if (!entries.length) throw new Error("Nothing to export.");
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(makeZip(entries));
+      a.download = fileName;
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      return entries.length;
+    }
+    // Reads a backup zip, and puts its files in the saves, replacing any profile of the same name (whatever its case, as
+    // the game sees it) as a whole.
+    async function importSaves(file) {
+      if (file.size > MAX_BACKUP) throw new Error("That file is too big to be a backup.");
+      const buf = await file.arrayBuffer();
+      if (new Uint8Array(buf, 0, 2).join() !== "80,75") throw new Error("That is not a zip file."); // "PK"
+      let files = await readZip(buf);
+      for (const f of files) {
+        if (f.name.split("/").some((s) => !s || s === "." || s === "..") || /^[a-z]:/i.test(f.name)) {
+          throw new Error("The zip has a file this page will not take: " + f.name.slice(0, 80));
+        }
+      }
+      // A zip of the whole folder has it as the one top folder: look inside.
+      const top = files.length && files[0].name.split("/")[0];
+      if (files.every((f) => f.name.includes("/") && f.name.split("/")[0] === top) && !/^(profile|procircuit|record)$/i.test(top)) {
+        files = files.map((f) => ({ ...f, name: f.name.slice(top.length + 1) }));
+      }
+      const entries = [];
+      for (const f of files) {
+        const path = "mm2-user/" + f.name;
+        if (!okSavePath(path)) throw new Error("The zip has a file this page will not take: " + f.name.slice(0, 80));
+        entries.push({ path, time: f.time, data: f.data });
+      }
+      if (!entries.length) throw new Error("The backup is empty.");
+      const incoming = new Map();
+      for (const e of entries) {
+        const name = e.path.startsWith(PROFILE_DIR) ? ownerOf(e.path) : null;
+        if (name) incoming.set(name.toLowerCase(), name);
+      }
+      const have = await listSaves();
+      if (!have) throw new Error("Could not read the saves, so nothing was imported.");
+      const replaced = groupSaves(have).list.filter((p) => incoming.has(p.name.toLowerCase()));
+      // The game sees paths without case, the store with it: a file the backup brings
+      // replaces the one there whatever its case, or the two would be kept side by side.
+      const byLower = new Map(have.files.map((f) => [f.path.toLowerCase(), f.path]));
+      const gone = new Set(replaced.flatMap((p) => p.keys));
+      for (const e of entries) {
+        const old = byLower.get(e.path.toLowerCase());
+        if (old) gone.add(old);
+      }
+      // Anything that would be lost is asked about first: same-named profiles (with their
+      // careers) and the other saves the backup has a copy of (settings, records, replays).
+      const others = [...gone].filter((k) => !ownerOf(k));
+      if (gone.size) {
+        const what = [];
+        if (replaced.length) what.push(replaced.map((p) => p.name).join(", ") + " (with " + (replaced.length === 1 ? "its" : "their") + " Pro Circuit careers)");
+        if (others.length) what.push(others.length + " other saved " + (others.length === 1 ? "file" : "files") + " (settings, records or replays)");
+        if (!confirm("This backup replaces what is saved now: " + what.join(" and ") + ". The current copies are lost unless exported. Replace them?")) return null;
+      }
+      const ok = await inSaves("readwrite", (files, meta) => {
+        for (const k of gone) { files.delete(k); meta.delete(k); }
+        for (const e of entries) { files.put(e.data, e.path); meta.put(e.time, e.path); }
+      });
+      if (!ok) throw new Error("The browser would not store the backup (out of space?).");
+      return { profiles: incoming.size, files: entries.length };
+    }
+
+    function setupSavesPanel() {
+      const $ = (id) => document.getElementById(id);
+      const list = $("saves-list"), note = $("saves-note"), message = $("saves-status");
+      const exportAll = $("saves-export"), importBtn = $("saves-import"), input = $("saves-file");
+      const say = (text, bad) => { message.textContent = text; message.classList.toggle("err", !!bad); };
+      // One change at a time: every button waits while one runs.
+      let busy = false;
+      const once = (job) => async (...a) => {
+        if (busy) return;
+        busy = true;
+        for (const b of $("saves").querySelectorAll("button")) b.disabled = true;
+        try { await job(...a); } finally { busy = false; await refresh(); }
+      };
+      // Whether the game is running in another tab (it holds the lock `launch` takes).
+      const gameElsewhere = async () => {
+        try { return !!(await navigator.locks?.query())?.held?.some((l) => l.name === "mm2-game"); } catch (e) { return false; }
+      };
+      const RUNNING = "The game is running in another tab. Close it first: its next save would undo this.";
+      // A profile's files as they are now, not as they were when the list was drawn.
+      const keysOf = async (name) => {
+        const s = await listSaves();
+        if (!s) return null;
+        return groupSaves(s).list.find((p) => p.name.toLowerCase() === name.toLowerCase())?.keys || [];
+      };
+      const row = (p) => {
+        const li = document.createElement("li");
+        const who = document.createElement("div");
+        who.className = "who";
+        const name = document.createElement("b");
+        name.textContent = p.name;
+        const small = document.createElement("small");
+        small.textContent = `Updated ${timeText(p.time)} · ${sizeText(p.size)}`;
+        who.append(name, small);
+        const out = document.createElement("button");
+        out.className = "link";
+        out.textContent = "Export";
+        out.onclick = once(async () => {
+          try {
+            const own = new Set((await keysOf(p.name)) || []);
+            await exportSaves((k) => own.has(k), `MCM2_profile_${p.name.replace(/[^\w()$#@-]+/g, "_")}_${stamp()}.zip`);
+            say(`Exported ${p.name}.`);
+          } catch (e) { say(e.message, true); }
+        });
+        const del = document.createElement("button");
+        del.className = "link danger";
+        del.textContent = "Delete";
+        let timer = 0;
+        const remove = once(async () => {
+          if (await gameElsewhere()) return say(RUNNING, true);
+          const keys = await keysOf(p.name);
+          if (!keys) return say("Could not read the saves, so nothing was deleted.", true);
+          const ok = await inSaves("readwrite", (files, meta) => { for (const k of keys) { files.delete(k); meta.delete(k); } });
+          say(ok ? `Deleted ${p.name}, with its Pro Circuit careers. It is gone from the game too.` : "Could not delete it.", !ok);
+        });
+        del.onclick = () => {
+          if (!timer) {
+            del.textContent = "Really delete?";
+            timer = setTimeout(() => { timer = 0; del.textContent = "Delete"; }, 4000);
+            return;
+          }
+          clearTimeout(timer);
+          remove();
+        };
+        li.append(who, out, del);
+        return li;
+      };
+      async function refresh() {
+        const s = await listSaves();
+        if (!s) {
+          list.replaceChildren();
+          note.textContent = "This browser is not keeping saves (a private window, or site data blocked), so there is nothing to list.";
+          exportAll.disabled = importBtn.disabled = true;
+          return;
+        }
+        const { list: profiles, other } = groupSaves(s);
+        if (!profiles.length) {
+          const li = document.createElement("li");
+          li.className = "empty";
+          li.textContent = "No profiles yet. Make one in the game, or import a backup.";
+          list.replaceChildren(li);
+        } else list.replaceChildren(...profiles.map(row));
+        note.textContent = other.count
+          ? `Also kept: settings, records and replays (${other.count} ${other.count === 1 ? "file" : "files"}, ${sizeText(other.size)}). Export all includes them.`
+          : "";
+        exportAll.disabled = !s.files.length;
+        importBtn.disabled = false;
+      }
+      exportAll.onclick = once(async () => {
+        try {
+          const n = await exportSaves(() => true, `MCM2_all-profiles_${stamp()}.zip`);
+          say(`Exported ${n} ${n === 1 ? "file" : "files"}. Keep it somewhere safe.`);
+        } catch (e) { say(e.message, true); }
+      });
+      importBtn.onclick = () => { if (!busy) input.click(); };
+      input.onchange = once(async () => {
+        const file = input.files[0];
+        input.value = "";
+        if (!file) return;
+        if (await gameElsewhere()) return say(RUNNING, true);
+        try {
+          const done = await importSaves(file);
+          if (!done) say("Import cancelled. Nothing was changed.");
+          else if (done.profiles) say(`Imported ${done.profiles} ${done.profiles === 1 ? "profile" : "profiles"}. They are in the game now.`);
+          else say(`Imported ${done.files} ${done.files === 1 ? "file" : "files"}. They are in the game now.`);
+        } catch (e) { say(e.message, true); }
+      });
+      refresh();
     }
 
     // The canvas fills the whole window. The game is drawn with at least
@@ -370,7 +815,8 @@
     // The X on the main menu: back to the start page. The engine cannot be started
     // twice in one page, so the page loads again (saved profiles are kept).
     window.mm2Quit = () => {
-      const again = () => location.reload();
+      // A save the game has just made may still be on its way to the store.
+      const again = () => savesSettled(3000).then(() => location.reload());
       if (document.fullscreenElement) document.exitFullscreen().then(again, again);
       else again();
     };
@@ -533,7 +979,6 @@
 
     async function launch(wasm, lost = []) {
       installCursor();
-      await restoreSaves(wasm);
       status.textContent = lost.length ? "Ready, but these game files were not found: " + lost.join(", ") : "Ready.";
       choose.style.display = "none"; // the folder is in: Start is the one button now
       document.querySelector("#setup .steps").hidden = true; // the folder is in: nothing left to choose
@@ -545,6 +990,16 @@
       change.hidden = false;
       await new Promise((r) => go.addEventListener("click", r, { once: true }));
       go.remove();
+      // The saves are handed over only now, so the Profiles panel's changes are in them.
+      if (savesBlocked) status.textContent = "Your saves are open in another tab of this page. Close that tab to go on.";
+      if (!(await restoreSaves(wasm))) {
+        status.innerHTML = `<span class="err"></span>`;
+        status.firstChild.textContent = "Your saves could not be read, so the game was not started (it could have saved over them). Reload the page to try again.";
+        return;
+      }
+      // While the game runs, the start page in another tab must not change the saves:
+      // the game's next save would undo it. The lock tells that tab (`gameElsewhere`).
+      navigator.locks?.request("mm2-game", () => new Promise(() => {})).catch(() => {});
       document.getElementById("setup").style.display = "none";
       const canvas = document.getElementById("mm2-canvas");
       canvas.style.display = "block";
@@ -961,6 +1416,9 @@
         } catch (e) {}
       }, 1000);
     }
+
+    // The panel needs only the browser's storage, not the engine.
+    setupSavesPanel();
 
     window.addEventListener("TrunkApplicationStarted", async () => {
       const wasm = window.wasmBindings;

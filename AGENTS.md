@@ -45,7 +45,7 @@ cargo run --release -p mm2-viewer -- "<game folder>"    # desktop viewer
 
 ## Where things are
 
-- `crates/mm2-viewer/index.html`: the web page (folder picker, saves, sound, pointer).
+- `crates/mm2-viewer/index.html`: the web page (folder picker, saves and the Profiles panel, sound, pointer).
 - `crates/mm2-viewer/src/platform.rs`: in-memory file system and browser shims.
 - `crates/mm2-viewer/src/main.rs`: entry points, including the `web` module (wasm API).
 - `crates/mm2-viewer/src/frontend.rs`, `ui.rs`, `sprites.rs`: menus and layout.

@@ -75,7 +75,13 @@ The same Rust code is compiled to WebAssembly and runs in the page. When you cho
 folder, its files are read into memory in the browser and never sent anywhere, and track
 data loads when you open an event. The engine draws to a canvas with WebGPU, plays sound
 through Web Audio, and keeps your profile, settings and records in the browser's own
-storage.
+storage. The start page lists your saved profiles with their last update, and lets you
+delete them, export them as a zip and import that zip later, so your progress survives
+clearing the browser's data. This web build also allows bringing the save game file, which
+stores its data in AppData, along with your own game files: the zip has the same layout as
+the desktop engine's save folder (`%APPDATA%\MM2`), so it works both ways. It does not read
+the original game's own binary profiles. Leave the game with the X on the main menu:
+closing the tab right after a save can lose that save.
 
 ## Build
 
@@ -120,7 +126,7 @@ different name. Publish the engine and the page only, never the game's files.
 
 | Work | Author | Licence |
 | --- | --- | --- |
-| [openmcm2](https://github.com/crspytopgn/openmcm2) v0.2.1: the engine, physics, file formats and menus this port is built on | [crspytopgn](https://github.com/crspytopgn) and contributors | MIT or Apache-2.0 |
+| [openmcm2](https://github.com/crspytopgn/openmcm2): the engine, physics, file formats and menus this port is built on | [crspytopgn](https://github.com/crspytopgn) and contributors | MIT or Apache-2.0 |
 | Indeo 5 decoder (`crates/mm2-indeo`), a port of [FFmpeg](https://ffmpeg.org)'s | Maxim Poliakovski and the FFmpeg developers | LGPL 2.1 or later |
 | Ground materials for the optional enhanced graphics, from [ambientCG](https://ambientcg.com) | ambientCG | CC0 |
 | *Motocross Madness 2* | Rainbow Studios | © Microsoft |

@@ -126,7 +126,8 @@ The web port is the work of this repository. In short:
 - the wasm entry points and the asynchronous WebGPU start-up (the `web` module in
   `crates/mm2-viewer/src/main.rs`);
 - the web page itself (`crates/mm2-viewer/index.html`): folder picker, file
-  loading, saves, sound unlocking, the custom pointer, the canvas sizing;
+  loading, saves and the Profiles panel (list, delete, zip backup and restore),
+  sound unlocking, the custom pointer, the canvas sizing;
 - a development file server (`tools/serve_game.py`);
 - free fonts that stand in for Arial (`crates/mm2-viewer/fonts/`);
 - many fixes and features listed in §6.
@@ -211,11 +212,53 @@ tracks, one folder per event type). Menu text comes from the string tables in
 5. **Fonts.** The menus are set in Arial, which cannot be redistributed.
    Liberation Sans, which has the same letter widths, is served with the page and
    handed to the engine as `C:\Windows\Fonts\arial*.ttf` (`add_system_file`).
-6. **Saves.** Profiles, settings, records, replays and ghosts are kept in
-   IndexedDB (`mm2-saves`). The engine calls `mm2Persist(path, bytes)` and
-   `mm2Forget(path, isFolder)` as it writes and deletes. Before the game starts,
-   the page hands everything back with `add_saved_file`, and it asks the browser
-   to keep the storage (`navigator.storage.persist`).
+6. **Saves.** Everything the player saves (profiles, settings, Pro Circuit
+   careers, records, replays and ghosts) lives under the engine's user folder
+   `mm2-user`, and the page keeps it in IndexedDB (`mm2-saves`):
+   - The `files` store maps each path to its bytes. The engine calls
+     `mm2Persist(path, bytes)` and `mm2Forget(path, isFolder)` as it writes and
+     deletes. A second store, `meta`, holds each file's last write time (ms), set
+     by `mm2Persist`; saves from before it existed show "Updated unknown".
+   - The page hands the files back with `add_saved_file` when "Start game" is
+     pressed, not when the folder is read, so whatever the Profiles panel
+     changed before that is what the game sees. It also asks the browser to keep
+     the storage (`navigator.storage.persist`), which does not protect against
+     the player clearing site data.
+   - **Profiles panel (start page).** It needs only the browser's storage, not
+     the engine. It lists each profile with its last update and size, and has
+     Export, Delete, Export all and Import backup. A profile is
+     `profile/<name>/` plus its Pro Circuit careers in `procircuit/<name>/`
+     (the engine keeps them apart), and all of it is listed, exported, deleted
+     and replaced together. Settings, records and replays are not tied to a
+     profile and only travel in Export all.
+   - **Backups** are zips laid out like the desktop save folder, with no
+     `mm2-user/` prefix: `settings.ini`, `profile/<name>/<name>.prf`,
+     `profile/<name>/control.ctl`, `procircuit/<name>/...`, `record/...`. They
+     unpack into the desktop viewer's folder (`%APPDATA%\MM2` on Windows), and a
+     zip of that folder imports here, so saves can move between the two builds.
+     Names are `MCM2_profile_<name>_<date>_<time>.zip` and
+     `MCM2_all-profiles_<date>_<time>.zip`. Files are stored uncompressed (the
+     writer is a few lines, no library); the reader also takes deflated zips
+     through `DecompressionStream`, checks each file's CRC, and ignores a single
+     wrapper folder. It refuses encrypted and zip64 files, anything over 600 MB
+     unpacked, and any path with `..`, a drive letter, a backslash or a control
+     character.
+   - **Guards against losing saves.** Import asks before it replaces anything
+     already saved: a profile of the same name (compared without case, replaced
+     as a whole with its careers) and any other file the backup has a copy of
+     (settings, records, replays, so an old "Export all" cannot silently undo
+     newer records). A file it brings replaces the stored one whatever its
+     case, as the engine sees paths without case. Delete and Export read the
+     profile's files at the moment of the click. While the game runs, its tab
+     holds the Web Lock `mm2-game`, and the panel in another tab refuses to
+     delete or import (the game's next save would undo it). One panel action
+     runs at a time. If the saves cannot all be read at Start, the game is not
+     started. Quitting from the main menu waits (up to 3 s) for writes still on
+     their way. A failed write is reported in the console. An open tab of an
+     older page that blocks the store's upgrade is reported on the page.
+   - The start page's Graphics choices are in `localStorage`, not here, so they
+     are not in a backup. The game's own Graphics options are in the profile
+     and do travel.
 7. **Start.** A "Start game" button starts the engine (`start_game`). The click
    matters: browsers keep sound off until the page has had a user gesture. The
    page wraps `AudioContext` so it can resume every context the audio library
@@ -324,6 +367,8 @@ All dated 2026-11-02 unless noted.
 
 **Saves and records**
 - Profiles, settings and records persist in IndexedDB across reloads.
+- The start page can list, delete, export and import profiles as a zip in the
+  desktop save-folder layout (see 5.2, item 6).
 - Track records are now saved at the end of a race. The port previously had the
   High Scores screen but nothing ever added a record.
 
@@ -371,6 +416,10 @@ All dated 2026-11-02 unless noted.
   race, results, next race, the career persists).
 - Sound in races, the engine sound, the intro and credits movies.
 - Gamepad (simulated), saves and records across reloads.
+- The Profiles panel with the real game files: a real profile (with its career)
+  exported, deleted, and imported again came back as "Current Profile" in the
+  game. Also tested on the page alone: list, delete, replace on import, bad
+  paths refused, upgrade from the first saves database.
 - Frame pacing in a release build: about 6.4 ms on average, 12 ms at the 99th
   percentile, at 1920×855 with maximum settings.
 
@@ -390,6 +439,9 @@ All dated 2026-11-02 unless noted.
 
 **Not yet verified**
 - Saving a replay or ghost; the 5- and 10-lap record tables; stunt records.
+- Moving a save zip between this build and the desktop viewer (the layouts
+  match by the code, but neither direction has been tried), and zips made by
+  Windows Explorer or 7-Zip. The panel in browsers other than Chrome.
 - The automatic resolution step-down on a genuinely slow GPU.
 - A physical gamepad.
 - Some screens after the wide-layout change (Pro Circuit, Race Info, Profiles,
@@ -671,7 +723,9 @@ money. Computer riders get random names and rides that change with each level.
   (tracks per series, laps, bonus track), `UI/PCNames.txt` (rival names) and the
   availability levels in `bikes.pb` and `riders.pb`.
 - The circuit is saved whole (4,645 bytes) with each rider's last-race and
-  season totals.
+  season totals. Each profile's careers are kept in `procircuit/<profile>/`
+  (`Career1.txt`, ...) in the user folder, apart from `profile/<profile>/`;
+  the web page's Profiles panel treats the two as one profile.
 - The rules are in `procircuit.rs` and the screens in `screens/pro.rs`.
 
 ## 17. Reference: command-line options (desktop)
