@@ -13,15 +13,19 @@ See [Credits](#credits).
 > for Morrowind. Nothing of the game is hosted or shipped here: no data, no artwork, no
 > code from the original game.
 
-[Why](#why-i-made-this) · [Play](#play) · [How it works](#how-it-works) · [Build](#build) · [Deploy](#deploy-to-github-pages) · [Credits](#credits) · [Legal](#legal) · [Licence](#licence)
+[Why](#why-a-web-version) · [Play](#play) · [How it works](#how-it-works) · [Build](#build) · [Deploy](#deploy-to-github-pages) · [Credits](#credits) · [Legal](#legal) · [Licence](#licence)
 
-## Why I made this
+## Why a web version
 
-Motocross Madness 2 isn't sold anywhere any more, and support for it ended long ago. It was
-built for the Windows and DirectX of the early 2000s, and on current Windows it often won't
-start or runs with broken graphics, sound or input. Online workarounds exist, but they mean
-downloading random files, software or code from the internet, which is inconvenient and a
-risk.
+Motocross Madness 2 was the first game I ever played on a PC, in the early 2000s. I loved
+it as a kid, and I wanted to feel that nostalgia again without the hassle.
+
+The hassle is real. The game isn't sold anywhere any more, and support for it ended long
+ago. It was built for the Windows and DirectX of the early 2000s, and on current Windows
+(10 and 11) it usually won't start, and when it does the graphics, sound or input are
+broken. On Linux and macOS it doesn't run at all without extra compatibility software. Fixes and workarounds are
+available online, but they mean downloading random files, software or code from the
+internet, which is inconvenient and a risk.
 
 So this needs nothing: no downloads, no installs, no compatibility fixes. Open the page,
 choose your installed game folder, and play.
@@ -42,13 +46,36 @@ your computer and there is nothing to log in to.
 Controls are the original's: the arrow keys to ride, W/S to lean, Z/X for stunts. Xbox and
 PlayStation gamepads work too.
 
+### Unsupported devices and browsers
+
+The page checks your device and browser before it reads any game file, and shows what is
+wrong instead of starting:
+
+* **Phones and tablets** are not supported. Most mobile browsers lack WebGPU or run it too
+  slowly for this engine, and there are no touch controls: the game needs a keyboard or
+  gamepad. Use a desktop or laptop.
+* **Browsers without WebGPU** (older versions, Safari, Linux Firefox) cannot draw the game.
+  Use a recent Chrome or Edge, or Firefox on Windows.
+* **WebGPU with no usable graphics** (graphics acceleration turned off, a blocked or old
+  driver, a virtual machine without 3D) is reported with the setting to change.
+* **Pages that are not HTTPS or localhost** are refused, because WebGPU needs a secure page.
+
 ## How it works
 
-The engine is written in Rust and compiled to WebAssembly. It draws with WebGPU and plays
-sound through Web Audio, and the intro and credits movies are decoded in the page. When you
-choose your folder, its files are read into memory in the browser and are never sent
-anywhere. Track data loads when you open an event. Your profile, settings and track records
-are kept in the browser's own storage.
+### The engine
+
+The engine is written in Rust and rebuilds the game from the files of your own install: the
+menus, bikes, riders and sounds from `UI` and `RES`, and the tracks from `TERAFORM`. It
+runs the original's physics and race rules, draws the world and the menus with WebGPU, and
+decodes the intro and credits movies itself.
+
+### The web build
+
+The same Rust code is compiled to WebAssembly and runs in the page. When you choose your
+folder, its files are read into memory in the browser and never sent anywhere, and track
+data loads when you open an event. The engine draws to a canvas with WebGPU, plays sound
+through Web Audio, and keeps your profile, settings and records in the browser's own
+storage.
 
 ## Build
 
