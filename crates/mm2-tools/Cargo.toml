@@ -1,0 +1,14 @@
+[package]
+name = "mm2-tools"
+description = "Command-line tools for inspecting Motocross Madness 2 data files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mm2-tools"
+path = "src/main.rs"
+
+[dependencies]
+mm2-formats = { path = "../mm2-formats" }
+png = "0.18.1"

@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = ["crates/mm2-formats", "crates/mm2-indeo", "crates/mm2-physics", "crates/mm2-tools", "crates/mm2-viewer"]
+
+[workspace.package]
+version = "0.2.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"

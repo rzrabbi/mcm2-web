@@ -1,0 +1,10 @@
+[package]
+name = "mm2-physics"
+description = "Motocross Madness 2 bike physics, rebuilt from the game"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+glam = "0.30"
+mm2-formats = { version = "0.2.1", path = "../mm2-formats" }

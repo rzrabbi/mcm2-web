@@ -1,0 +1,889 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MCM 2 - Web</title>
+  <meta name="description" content="Play Motocross Madness 2 in your browser with your own copy of the game. A WebAssembly and WebGPU port of the openmcm2 engine." />
+  <link data-trunk rel="icon" href="favicon.png" />
+  <link data-trunk rel="copy-dir" href="fonts" />
+  <link data-trunk rel="rust" data-bin="mm2-viewer" data-cargo-no-default-features data-cargo-features="audio,gamepad" />
+  <script>
+    // Browsers keep sound off until the page has been clicked or a key pressed.
+    // The engine's audio library makes its own AudioContext, so note each one
+    // as it is made and start them all on the first such gesture.
+    (() => {
+      const made = (window.audioContexts = []);
+      const Real = window.AudioContext || window.webkitAudioContext;
+      if (!Real) return;
+      // The device's own rate, so the game can open its sound at it and the
+      // browser need not resample the mix.
+      try { const probe = new Real(); window.mm2NativeRate = probe.sampleRate; probe.close(); } catch (e) {}
+      window.AudioContext = window.webkitAudioContext = class extends Real {
+        constructor(...a) { super(...a); made.push(this); }
+      };
+      // `audioPeak()` reads the loudest recent output sample, to check that sound plays.
+      const proto = AudioNode.prototype, connect = proto.connect;
+      let tap = null;
+      proto.connect = function (dest, ...a) {
+        if (made.length && dest === made[0].destination) {
+          if (!tap) {
+            tap = made[0].createAnalyser();
+            tap.fftSize = 2048;
+            connect.call(this, tap);
+          } else if (this !== tap) connect.call(this, tap);
+        }
+        return connect.call(this, dest, ...a);
+      };
+      window.audioPeak = () => {
+        if (!tap) return -1;
+        const d = new Float32Array(tap.fftSize);
+        tap.getFloatTimeDomainData(d);
+        return d.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+      };
+      const wake =() => made.forEach((c) => c.state === "suspended" && c.resume());
+      for (const ev of ["pointerdown", "keydown", "touchend"]) addEventListener(ev, wake, { capture: true });
+      // The browser can also suspend sound by itself (a tab put aside, a phone
+      // call): start it again as soon as the page is back.
+      addEventListener("focus", wake);
+      document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && wake());
+    })();
+  </script>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #111; color: #ddd; font: 15px system-ui, sans-serif; }
+    /* The start page, in the look of the game's main menu: dark violet, steel panels
+       with a bevel, light-blue menu text, gold chain trim and a silver arrow pointer. */
+    :root { --bg: #0a0916; --steel-hi: #d4d9ee; --steel: #98a1c8; --steel-lo: #5d6794; --navy: #0b1a45; --blue: #8db6ff;
+      --text: #dfe6ff; --muted: #9ba6cf; --gold: #c9a92d; --gold-lo: #8a741c; }
+    html, body, #setup { cursor: url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27 viewBox=%270 0 24 24%27%3E%3Cpath d=%27M3 2 L3 19 L8 14.5 L11.5 22 L14.5 20.6 L11 13.2 L18 13 Z%27 fill=%27%23e6e9f8%27 stroke=%27%2305050f%27 stroke-width=%271.4%27 stroke-linejoin=%27round%27/%3E%3C/svg%3E") 3 2, default; }
+    #setup button, #setup summary, #setup a, #setup label { cursor: url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27 viewBox=%270 0 24 24%27%3E%3Cpath d=%27M3 2 L3 19 L8 14.5 L11.5 22 L14.5 20.6 L11 13.2 L18 13 Z%27 fill=%27%23f0d870%27 stroke=%27%2305050f%27 stroke-width=%271.4%27 stroke-linejoin=%27round%27/%3E%3C/svg%3E") 3 2, pointer; }
+    #setup { position: fixed; inset: 0; overflow-y: auto; color: var(--text); font-family: Arial, "Liberation Sans", Helvetica, sans-serif;
+      background: radial-gradient(ellipse at 50% 35%, #1b1740 0%, #0d0b22 55%, #07060f 100%); }
+    #setup .wrap { max-width: 34rem; margin: 0 auto; padding: 10vh 1.25rem 2.5rem; line-height: 1.5; }
+    #setup h1 { margin: 0; line-height: 1; font-style: italic; text-transform: uppercase; }
+    #setup h1 .game { display: block; white-space: nowrap; font-size: clamp(1.45rem, 6.4vw, 2.3rem); font-weight: 900; letter-spacing: -.01em;
+      color: #eef1ff; text-shadow: 0 2px 0 #55609a, 0 0 14px #2f55d8, 0 0 28px #1d3aa8; }
+    #setup h1 .sub { display: block; margin-top: .45rem; font-size: clamp(.85rem, 3.2vw, 1.1rem); font-weight: 700; letter-spacing: .5em;
+      color: var(--blue); text-shadow: 0 0 10px #2f55d8aa; }
+    #setup .lead { margin: .9rem 0 1.5rem; color: var(--muted); }
+    /* The panel: a steel frame round a navy screen, like the menu's windows. */
+    #setup .card { padding: 6px; border-radius: 3px; border-top: 2px solid #f2f4ff; border-left: 2px solid #e1e5f7;
+      border-right: 2px solid #4b5584; border-bottom: 2px solid #3c4470;
+      background: linear-gradient(#aab2d6, #707ba8); box-shadow: 0 8px 28px #000a, 0 0 0 1px #05050f; }
+    #setup .screen { padding: 1.25rem 1.3rem 1.3rem; border: 1px solid #040a22; border-radius: 2px;
+      background: repeating-linear-gradient(#0b1a45 0 2px, #0a1840 2px 4px); box-shadow: inset 0 0 18px #000b; }
+    #setup .steps { margin: 0 0 1.2rem; padding: 0; list-style: none; display: grid; gap: .55rem; }
+    #setup .steps li { display: flex; gap: .75rem; align-items: baseline; color: var(--blue); }
+    #setup .steps li.note { display: block; margin: -.2rem 0 .3rem 2.25rem; font-size: .82rem; line-height: 1.4; color: var(--muted); }
+    #setup .steps b { flex: none; width: 1.5rem; height: 1.5rem; line-height: 1.5rem; text-align: center; border-radius: 50%;
+      color: #1b1500; background: linear-gradient(#f0d870, var(--gold)); font-size: .8rem; box-shadow: 0 0 0 1px #5a4a08; }
+    #setup code { background: #060f30; padding: .05em .35em; border: 1px solid #1d2e6a; border-radius: 2px; font-size: .9em; color: #b5cdff; }
+    #setup input[type=file] { display: none; }
+    /* Buttons: a flat steel face with a bevel and dark lettering, as on the OK buttons. */
+    #setup .btn { display: block; width: 100%; margin-top: 1rem; padding: .8rem 1rem; font: inherit; font-size: 1rem; font-weight: 700;
+      letter-spacing: .04em; text-transform: uppercase; color: #0a0a18; text-shadow: 0 1px 0 #f4f6ff;
+      background: linear-gradient(#e6e9f8, #a3abcf); border-radius: 2px; border-top: 2px solid #fff; border-left: 2px solid #f1f3ff;
+      border-right: 2px solid #4b5584; border-bottom: 2px solid #3c4470; box-shadow: 0 2px 0 #05050f; }
+    #setup .btn:hover:not(:disabled) { background: linear-gradient(#fff6c8, #e0c04a); box-shadow: 0 0 12px #e0c04a88, 0 2px 0 #05050f; }
+    #setup .btn:active:not(:disabled) { transform: translateY(1px); border-top-color: #4b5584; border-left-color: #4b5584;
+      border-right-color: #f1f3ff; border-bottom-color: #fff; }
+    #setup .btn:disabled { opacity: .45; }
+    #setup .link { display: block; margin: .9rem auto 0; padding: 0; font: inherit; font-size: .88rem; color: #ffd966; background: none;
+      border: 0; text-decoration: underline; text-underline-offset: 2px; }
+    #setup.dragging .card:has(#choose) { outline: 2px dashed var(--gold); outline-offset: 4px; }
+    #setup [hidden] { display: none !important; }
+    #setup .hint { margin: 1rem 0 0; font-size: .82rem; color: #6f7cae; }
+    #setup details { margin-top: 1.4rem; color: var(--muted); font-size: .92rem; }
+    #setup summary { color: var(--blue); }
+    #setup details p { margin: .6rem 0 0; }
+    #setup a { color: #ffd966; text-underline-offset: 2px; }
+    #setup .foot { margin-top: 2rem; padding-top: .8rem; border-top: 2px dotted var(--gold-lo); font-size: .76rem; color: #6f7cae; }
+    #warn { display: none; margin-bottom: 1rem; padding: .8rem 1rem; border-radius: 2px; background: #3a1d1d; border: 1px solid #7a3232; color: #ffb4b4; }
+    #warn .head { margin: 0 0 .5rem; font-weight: 700; letter-spacing: .2em; text-transform: uppercase; }
+    #warn .problem + .problem { margin-top: .6rem; }
+    #warn .problem p { margin: .25rem 0 0; font-size: .9rem; }
+    #warn .problem code { display: block; margin-top: .3rem; font-size: .75rem; letter-spacing: .08em; opacity: .7; }
+    #status { margin-top: .9rem; min-height: 1.4em; color: var(--blue); text-align: center; }
+    /* Drawn at 1920x1080 whatever the window; fit() scales it to the window. */
+    #mm2-canvas { display: none; position: fixed; left: 0; top: 0; outline: none; transform-origin: 0 0; }
+    .err { color: #f88; }
+    /* The graphics panel: the game's own drawing, or the port's enhanced one. */
+    #setup .gfx { margin-top: 1.2rem; }
+    #setup h2 { margin: 0 0 .8rem; font-size: .9rem; letter-spacing: .3em; text-transform: uppercase; color: var(--blue); }
+    #setup .modes { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; }
+    #setup .modes label { display: grid; grid-template-columns: auto 1fr; column-gap: .5rem; align-items: center; padding: .6rem .7rem;
+      border: 1px solid #1d2e6a; border-radius: 2px; background: #060f30; }
+    #setup .modes label:has(input:checked) { border-color: var(--gold); box-shadow: 0 0 10px #e0c04a44; }
+    #setup .modes small, #setup .checks small { display: block; color: var(--muted); font-size: .8rem; line-height: 1.35; }
+    #setup input[type=radio], #setup input[type=checkbox], #setup input[type=range] { accent-color: var(--gold); margin: .2rem 0 0; }
+    #setup .fields { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem .9rem; margin-top: 1rem; }
+    #setup .fields label { display: flex; flex-direction: column; gap: .2rem; font-size: .85rem; color: var(--muted); }
+    #setup .fields output { color: var(--text); }
+    #setup select { font: inherit; font-size: .9rem; color: var(--text); background: #060f30; border: 1px solid #1d2e6a;
+      border-radius: 2px; padding: .3rem .4rem; }
+    #setup .checks { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem .9rem; margin-top: 1.1rem; font-size: .9rem; }
+    #setup .checks label { display: grid; grid-template-columns: auto 1fr; column-gap: .45rem; align-items: start; }
+    #setup .gfx .hint { margin-top: .9rem; }
+    @media (max-width: 30rem) { #setup .modes, #setup .fields, #setup .checks { grid-template-columns: 1fr; } }
+    #fetching { position: fixed; left: 50%; bottom: 1rem; transform: translateX(-50%); padding: .4rem .8rem;
+      background: #000c; border-radius: 4px; display: none; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div id="setup"><main class="wrap">
+    <h1><span class="game">Motocross Madness 2</span><span class="sub">On Web</span></h1>
+    <p class="lead">Play in your browser with your own copy of the game. Nothing is uploaded.</p>
+
+    <div id="warn"></div>
+
+    <section class="card"><div class="screen">
+      <ol class="steps">
+        <li><b>1</b><span>Choose the folder where the game is installed, or drop it on this page.</span></li>
+        <li class="note">Your browser may say it will &ldquo;upload&rdquo; the folder. It won't: the files are only read in this tab and never leave your computer.</li>
+        <li><b>2</b><span>Press <em>Start game</em>.</span></li>
+      </ol>
+      <button id="choose" class="btn" disabled>Choose game folder</button>
+      <button id="change" class="link" hidden>Use a different folder</button>
+      <input id="pick" type="file" webkitdirectory multiple disabled />
+      <div id="status">Loading the engine…</div>
+    </div></section>
+
+    <section id="gfx" class="card gfx" hidden><div class="screen">
+      <h2>Graphics</h2>
+      <div class="modes">
+        <label><input type="radio" name="gfx-mode" value="original" id="gfx-off" checked />
+          <span><b>Original</b></span></label>
+        <label><input type="radio" name="gfx-mode" value="enhanced" id="gfx-on" />
+          <span><b>Enhanced</b></span></label>
+      </div>
+      <div id="gfx-opts" hidden>
+        <div class="fields">
+          <label>Quality
+            <select id="gfx-quality">
+              <option value="low">Low</option><option value="medium">Medium</option>
+              <option value="high">High</option><option value="ultra">Ultra</option>
+            </select></label>
+          <label>Anti-aliasing
+            <select id="gfx-msaa">
+              <option value="1">Off</option><option value="4">4×</option>
+            </select></label>
+          <label>Most pixels for the 3D scene
+            <select id="gfx-res">
+              <option value="native">The screen's own</option><option value="2160p">2160p</option><option value="1440p">1440p</option>
+              <option value="1080p">1080p</option><option value="900p">900p</option><option value="720p">720p</option>
+            </select></label>
+          <label>Time of day
+            <select id="gfx-time">
+              <option value="">The scene's own sun</option><option value="dawn">Dawn (7:00)</option><option value="morning">Morning</option>
+              <option value="noon">Noon</option><option value="afternoon">Afternoon</option><option value="dusk">Dusk (18:00)</option>
+            </select></label>
+          <label>Weather
+            <select id="gfx-weather">
+              <option value="clear">Clear</option><option value="overcast">Overcast</option><option value="rain">Rain</option>
+            </select></label>
+          <label>Ground detail <output id="gfx-detail-n"></output>
+            <input type="range" id="gfx-detail" min="0" max="1" step="0.05" /></label>
+          <label>Mud at the start <output id="gfx-mud-n"></output>
+            <input type="range" id="gfx-mud" min="0" max="1" step="0.05" /></label>
+        </div>
+        <div id="gfx-list" class="checks"></div>
+        <p class="hint">A quality preset sets the options above and below; change them after. In a race, F3 switches between this and the original look.</p>
+        <button id="gfx-reset" class="link">Defaults</button>
+      </div>
+    </div></section>
+
+    <details>
+      <summary>About this project</summary>
+      <p>The game engine is a Rust program compiled to WebAssembly that draws with WebGPU. Your game files are read
+         into memory in your browser and never leave your computer. Your profile and records are saved in the browser.</p>
+      <p>Built on <a href="https://github.com/crspytopgn/openmcm2">openmcm2</a> 0.2.1 by crspytopgn, which provides the engine,
+         physics, file formats and menus. The movie decoder is a port of <a href="https://ffmpeg.org">FFmpeg</a>'s
+         Indeo 5 decoder by Maxim Poliakovski (LGPL). Ground materials are from <a href="https://ambientcg.com">ambientCG</a> (CC0).
+         The code is MIT or Apache-2.0 licensed.</p>
+    </details>
+
+    <p class="foot">An independent fan project, not affiliated with or endorsed by Microsoft or Rainbow Studios.
+       Motocross Madness is a trademark of Microsoft Corporation, and the game and its artwork are
+       &copy; Microsoft.</p>
+  </main></div>
+  <div id="fetching"></div>
+  <canvas id="mm2-canvas" tabindex="0"></canvas>
+  <script>
+    const status = document.getElementById("status");
+    const pick = document.getElementById("pick");
+    const choose = document.getElementById("choose");
+    choose.addEventListener("click", () => pick.click());
+    // The picker is the input, the button its face: both are on or off together.
+    const picking = (on) => { pick.disabled = !on; choose.disabled = !on; };
+    // Files the engine never reads; skipping them saves memory.
+    // UILANG.DLL and LANG.DLL hold the menus' text, and PCNAMES.TXT the Pro Circuit
+    // riders' names, so they stay.
+    const SKIP = /\.(pdf|hlp|exe|dll|rtf|txt|icd|cur|016|256|sem)$/i;
+    const KEEP = /^(uilang|lang)\.dll$|^pcnames\.txt$/i;
+    // Files the engine opens by name. A folder without one still starts, but that
+    // part of the game does not work, so the page says which are missing.
+    const NEEDED = [
+      "UI/GLOBAL.DAT", "UI/MAINMENU.DAT", "UI/UIRES.RES", "UI/PRESET.CTL", "UI/PCNAMES.TXT",
+      "RES/AUDIO.RES", "RES/BIKE.RES", "RES/COLSEG.RES", "RES/ECO.RES", "RES/ENGINE.RES",
+      "RES/GLOBAL.RES", "RES/MODELS.RES", "RES/OBJECTS.RES", "RES/SKIES.RES", "RES/PROCVUE.RES",
+    ];
+
+    // Track files are listed up front but fetched when the game opens their
+    // event (it calls `mm2Fetch`). `lazy` maps a path to a function that
+    // gives its bytes.
+    const lazy = new Map();
+    const fetching = document.getElementById("fetching");
+    // The fetch the game last asked for. The game lets go of a folder's files
+    // when it asks for another, so an earlier fetch stops as soon as it sees it
+    // has been replaced, and adds nothing more.
+    let trackLoad = null;
+    window.mm2Fetch = async (folder, paths) => {
+      const list = paths.split("\n").filter(Boolean);
+      const wasm = window.wasmBindings;
+      const name = folder.split("/").pop().toUpperCase();
+      const load = (trackLoad = { folder });
+      fetching.classList.remove("err");
+      fetching.style.display = "block";
+      try {
+        let n = 0;
+        for (const p of list) {
+          fetching.textContent = `Loading ${name} tracks… ${n}/${list.length}`;
+          const get = lazy.get(p);
+          if (get) {
+            const bytes = new Uint8Array(await get());
+            if (trackLoad !== load) return;
+            wasm.add_file(p, bytes);
+          }
+          n++;
+        }
+      } catch (e) {
+        if (trackLoad !== load) return;
+        fetching.textContent = String(e);
+        fetching.classList.add("err");
+        // The game asked for this folder once and waits for it: tell it the
+        // fetch failed, a few seconds on, so it asks again for what is missing.
+        setTimeout(() => {
+          if (trackLoad !== load) return;
+          trackLoad = null;
+          wasm.fetch_failed(folder);
+        }, 3000);
+        return;
+      }
+      if (trackLoad === load) fetching.style.display = "none";
+    };
+
+    // What the player saves (profiles, settings, replays, ghosts) is kept in
+    // IndexedDB under its path, and handed back before the game starts. The
+    // engine calls `mm2Persist` / `mm2Forget` as it writes and deletes.
+    const saves = new Promise((resolve) => {
+      try {
+        const open = indexedDB.open("mm2-saves", 1);
+        open.onupgradeneeded = () => open.result.createObjectStore("files");
+        open.onsuccess = () => resolve(open.result);
+        open.onerror = () => resolve(null);
+      } catch (e) { resolve(null); }
+    });
+    const inSaves = async (mode, f) => {
+      const db = await saves;
+      if (!db) return;
+      return new Promise((resolve) => {
+        const tx = db.transaction("files", mode);
+        f(tx.objectStore("files"));
+        tx.oncomplete = tx.onerror = tx.onabort = () => resolve();
+      });
+    };
+    // The engine's view of the bytes is only good during the call: copy.
+    window.mm2Persist = (path, data) => { const copy = data.slice(); inSaves("readwrite", (s) => s.put(copy, path)); };
+    window.mm2Forget = (path, folder) => inSaves("readwrite", (s) => {
+      if (!folder) s.delete(path);
+      else s.delete(IDBKeyRange.bound(path + "/", path + "0", false, true));  // "0" is the character after "/"
+    });
+    async function restoreSaves(wasm) {
+      const db = await saves;
+      if (!db) return;
+      await new Promise((resolve) => {
+        const req = db.transaction("files").objectStore("files").openCursor();
+        req.onsuccess = () => {
+          const c = req.result;
+          if (!c) return resolve();
+          wasm.add_saved_file(c.key, c.value);
+          c.continue();
+        };
+        req.onerror = () => resolve();
+      });
+      navigator.storage?.persist?.();
+    }
+
+    // The canvas fills the whole window. The game is drawn with at least
+    // 1080 lines: on a window with fewer device pixels than that tall, the
+    // canvas is made larger (so that many pixels) and scaled down to the
+    // window; on a bigger one it is drawn at the window's own pixels.
+    const MIN_HEIGHT = 1080;
+    function fit() {
+      const canvas = document.getElementById("mm2-canvas");
+      const dpr = window.devicePixelRatio || 1;
+      const f = Math.max(1, MIN_HEIGHT / (innerHeight * dpr));
+      canvas.style.width = innerWidth * f + "px";
+      canvas.style.height = innerHeight * f + "px";
+      canvas.style.transform = f === 1 ? "none" : `scale(${1 / f})`;
+    }
+    window.addEventListener("resize", fit);
+    document.addEventListener("fullscreenchange", () => setTimeout(fit, 100));
+    // With Esc locked, holding it leaves full screen.
+    let escHold = null;
+    addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !e.repeat && document.fullscreenElement) {
+        escHold = setTimeout(() => document.exitFullscreen().catch(() => {}), 800);
+      }
+    }, true);
+    addEventListener("keyup", (e) => { if (e.key === "Escape") { clearTimeout(escHold); escHold = null; } }, true);
+
+    // The X on the main menu: back to the start page. The engine cannot be started
+    // twice in one page, so the page loads again (saved profiles are kept).
+    window.mm2Quit = () => {
+      const again = () => location.reload();
+      if (document.fullscreenElement) document.exitFullscreen().then(again, again);
+      else again();
+    };
+
+    // Starts the game on a click: browsers play no sound (the intro movie's,
+    // say) unless the page was clicked before the sound began.
+
+    // What the game needs before any game file is read. A failed check is listed above
+    // the folder picker, which stays off, so the page never starts a game it cannot draw.
+    async function preflight() {
+      if (!window.isSecureContext) {
+        return [{ title: "Secure page", code: "PAGE-NOT-SECURE",
+          text: "WebGPU only works on https or localhost pages, and this page is neither." }];
+      }
+      if (!navigator.gpu) {
+        return [{ title: "Graphics (WebGPU)", code: "GPU-MISSING",
+          text: "This browser has no WebGPU. Use a recent desktop Chrome or Edge, or Firefox on Windows. Linux Firefox does not offer WebGPU yet, so use Chrome or Edge there." }];
+      }
+      // WebGPU can exist yet grant no adapter, for example with an old or blocked graphics driver.
+      let adapter = null;
+      try { adapter = await navigator.gpu.requestAdapter(); } catch (e) { console.warn("requestAdapter:", e); }
+      if (!adapter) {
+        // Graphics acceleration off in the browser's settings leaves WebGL with no
+        // renderer, or one that draws on the processor; only then say to turn it on.
+        const gl = webglRenderer();
+        if (gl === null || /SwiftShader|llvmpipe|softpipe|Basic Render/i.test(gl)) {
+          const ua = navigator.userAgent;
+          const where = /Firefox\//.test(ua) ? "in Settings > General > Performance (untick the recommended settings, then tick Use hardware acceleration when available)"
+            : /Edg\//.test(ua) ? "in edge://settings/system"
+            : "in chrome://settings/system";
+          return [{ title: "Graphics (WebGPU)", code: "GPU-ACCEL-OFF",
+            text: `This browser isn't using this computer's graphics. Turn on graphics acceleration ${where} and restart the browser. If it's already on, update the graphics driver. In a virtual machine, turn on 3D acceleration for the VM.` }];
+        }
+        return [{ title: "Graphics (WebGPU)", code: "GPU-NO-ADAPTER",
+          text: "This browser could not use this computer's graphics. Update the graphics driver and restart the browser. In a virtual machine, turn on 3D acceleration for the VM." }];
+      }
+      return [];
+    }
+    // WebGL's renderer string (the unmasked one where the browser gives it), or null
+    // when there is no WebGL.
+    function webglRenderer() {
+      try {
+        const gl = document.createElement("canvas").getContext("webgl");
+        if (!gl) return null;
+        const ext = gl.getExtension("WEBGL_debug_renderer_info");
+        const r = String(gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
+        gl.getExtension("WEBGL_lose_context")?.loseContext();
+        return r;
+      } catch (e) { return null; }
+    }
+    function showProblems(problems) {
+      const warn = document.getElementById("warn");
+      const head = document.createElement("p");
+      head.className = "head";
+      head.textContent = "Not ready";
+      warn.replaceChildren(head, ...problems.map((p) => {
+        const box = document.createElement("div");
+        box.className = "problem";
+        const title = document.createElement("b");
+        title.textContent = p.title;
+        const text = document.createElement("p");
+        text.textContent = p.text;
+        const code = document.createElement("code");
+        code.textContent = p.code;
+        box.append(title, text, code);
+        return box;
+      }));
+      warn.style.display = "block";
+      status.textContent = "Fix the problem above, then reload this page.";
+    }
+    // The game hides the system pointer (BLANK.CUR) and draws its own: UI/CURSOR.TGA,
+    // an arrow, and UI/WAIT.TGA, an hourglass for while a track loads (the exe loads
+    // both from the UI folder). Both are 16-bit 5-5-5 TGAs, magenta see-through. They
+    // are the player's files, so the pointer is built from them here, never shipped.
+    const cursorFiles = {};
+    function noteCursorFile(path, bytes) {
+      const m = /^ui\/(cursor|wait)\.tga$/i.exec(path);
+      if (m) cursorFiles[m[1].toLowerCase()] = bytes;
+    }
+    function decodeTga(b) {
+      const type = b[2], w = b[12] | (b[13] << 8), h = b[14] | (b[15] << 8), bpp = b[16];
+      if ((type !== 2 && type !== 10) || bpp !== 16) return null;
+      const topDown = (b[17] & 0x20) !== 0;
+      const px = new Uint16Array(w * h);
+      let i = 18 + b[0], n = 0;
+      while (n < px.length && i < b.length) {
+        if (type === 2) { px[n++] = b[i] | (b[i + 1] << 8); i += 2; continue; }
+        const head = b[i++], count = (head & 0x7f) + 1;
+        if (head & 0x80) {
+          const v = b[i] | (b[i + 1] << 8); i += 2;
+          for (let k = 0; k < count && n < px.length; k++) px[n++] = v;
+        } else {
+          for (let k = 0; k < count && n < px.length; k++, i += 2) px[n++] = b[i] | (b[i + 1] << 8);
+        }
+      }
+      const rgba = new Uint8ClampedArray(w * h * 4);
+      for (let y = 0; y < h; y++) {
+        const row = topDown ? y : h - 1 - y;
+        for (let x = 0; x < w; x++) {
+          const v = px[row * w + x], o = (y * w + x) * 4;
+          if (v === 0x7c1f) continue; // the see-through magenta
+          rgba[o] = ((v >> 10) & 31) * 255 / 31;
+          rgba[o + 1] = ((v >> 5) & 31) * 255 / 31;
+          rgba[o + 2] = (v & 31) * 255 / 31;
+          rgba[o + 3] = 255;
+        }
+      }
+      return { w, h, rgba };
+    }
+    // A CSS cursor value for a TGA. `crop`: cut to the drawn part and point at its
+    // middle (the hourglass sits in a bigger blank picture); otherwise the tip is the corner.
+    function cursorValue(bytes, scale, crop) {
+      const t = bytes && decodeTga(bytes);
+      if (!t) return null;
+      let x0 = 0, y0 = 0, x1 = t.w, y1 = t.h;
+      if (crop) {
+        x0 = t.w; y0 = t.h; x1 = 0; y1 = 0;
+        for (let y = 0; y < t.h; y++) for (let x = 0; x < t.w; x++) {
+          if (t.rgba[(y * t.w + x) * 4 + 3]) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x + 1); y1 = Math.max(y1, y + 1); }
+        }
+        if (x1 <= x0) return null;
+      }
+      const src = document.createElement("canvas");
+      src.width = t.w; src.height = t.h;
+      src.getContext("2d").putImageData(new ImageData(t.rgba, t.w, t.h), 0, 0);
+      const out = document.createElement("canvas");
+      out.width = (x1 - x0) * scale; out.height = (y1 - y0) * scale;
+      const g = out.getContext("2d");
+      g.imageSmoothingEnabled = false;
+      g.drawImage(src, x0, y0, x1 - x0, y1 - y0, 0, 0, out.width, out.height);
+      const hx = crop ? out.width >> 1 : 0, hy = crop ? out.height >> 1 : 0;
+      return `url(${out.toDataURL("image/png")}) ${hx} ${hy}`;
+    }
+    // winit sets the canvas's own `cursor: none` while the mouse looks around in a race;
+    // the rules below leave that alone.
+    function installCursor() {
+      const SCALE = 2; // 11x18 is tiny on a modern screen
+      const arrow = cursorValue(cursorFiles.cursor, SCALE, false);
+      const wait = cursorValue(cursorFiles.wait, SCALE, true);
+      if (!arrow) return;
+      const sel = '#mm2-canvas:not([style*="cursor: none"])';
+      const style = document.createElement("style");
+      style.textContent = `${sel} { cursor: ${arrow}, default !important; }` +
+        (wait ? `body.mm2-busy ${sel} { cursor: ${wait}, wait !important; }` : "");
+      document.head.append(style);
+    }
+    window.mm2Busy = (on) => document.body.classList.toggle("mm2-busy", !!on);
+
+    async function launch(wasm, lost = []) {
+      installCursor();
+      await restoreSaves(wasm);
+      status.textContent = lost.length ? "Ready, but these game files were not found: " + lost.join(", ") : "Ready.";
+      choose.style.display = "none"; // the folder is in: Start is the one button now
+      document.querySelector("#setup .steps").hidden = true; // the folder is in: nothing left to choose
+      const go = document.createElement("button");
+      go.textContent = "Start game";
+      go.className = "btn";
+      status.after(go);
+      go.after(change);
+      change.hidden = false;
+      await new Promise((r) => go.addEventListener("click", r, { once: true }));
+      go.remove();
+      document.getElementById("setup").style.display = "none";
+      const canvas = document.getElementById("mm2-canvas");
+      canvas.style.display = "block";
+      fit();
+      try {
+        wasm.start_game(graphicsList());
+      } catch (e) {
+        document.getElementById("setup").style.display = "";
+        canvas.style.display = "none";
+        status.innerHTML = `<span class="err"></span>`;
+        status.firstChild.textContent = String(e && e.message || e);
+        return;
+      }
+      canvas.focus();
+    }
+    // The menus' text is Arial, which cannot be shipped. Liberation Sans has the
+    // same letter widths and is free: it fills in for any Arial file not found.
+    const FONTS = {
+      "arial.ttf": "LiberationSans-Regular.ttf",
+      "arialbd.ttf": "LiberationSans-Bold.ttf",
+      "arialbi.ttf": "LiberationSans-BoldItalic.ttf",
+      "ariali.ttf": "LiberationSans-Italic.ttf",
+    };
+    async function addFreeFonts(wasm, have = new Set()) {
+      for (const [name, free] of Object.entries(FONTS)) {
+        if (have.has(name)) continue;
+        try {
+          const r = await fetch("fonts/" + free);
+          if (!r.ok) { console.warn(`font ${free}: HTTP ${r.status}`); continue; }
+          wasm.add_system_file("C:\\Windows\\Fonts\\" + name, new Uint8Array(await r.arrayBuffer()));
+        } catch (e) { console.warn(`font ${free}:`, e); }
+      }
+    }
+
+    // Development only: `?game=http://localhost:8081` loads the files from a
+    // local server (see tools/serve_game.py) instead of the folder picker.
+    async function devLoad(wasm, base) {
+      const paths = await (await fetch(base + "/manifest.json")).json();
+      let done = 0;
+      for (const p of paths) {
+        const r = await fetch(base + "/" + p.split("/").map(encodeURIComponent).join("/"));
+        const bytes = new Uint8Array(await r.arrayBuffer());
+        noteCursorFile(p, bytes);
+        wasm.add_file(p, bytes);
+        if (++done % 10 === 0) status.textContent = `Fetching… ${done}/${paths.length}`;
+      }
+      for (const [p] of await (await fetch(base + "/remote.json")).json()) {
+        wasm.add_remote_file(p);
+        lazy.set(p, async () => {
+          const r = await fetch(base + "/" + p.split("/").map(encodeURIComponent).join("/"));
+          if (!r.ok) throw new Error(`${p}: ${r.status}`);
+          return r.arrayBuffer();
+        });
+      }
+      // The text is Arial; the game looks for it where Windows keeps it. The
+      // loader hands over the player's own copy when it has one.
+      const have = new Set();
+      for (const name of Object.keys(FONTS)) {
+        const r = await fetch(base + "/__fonts/" + name);
+        if (r.ok) {
+          wasm.add_system_file("C:\\Windows\\Fonts\\" + name, new Uint8Array(await r.arrayBuffer()));
+          have.add(name);
+        }
+      }
+      await addFreeFonts(wasm, have);
+      await launch(wasm);
+    }
+
+    // The folder is read afresh each visit (a folder input or a drop gives no lasting
+    // access to it). Only the menus' text files, if the folder lacked them, are kept.
+    const change = document.getElementById("change");
+    const gameDb = new Promise((resolve) => {
+      try {
+        const open = indexedDB.open("mm2-setup", 1);
+        open.onupgradeneeded = () => open.result.createObjectStore("kv");
+        open.onsuccess = () => resolve(open.result);
+        open.onerror = () => resolve(null);
+      } catch (e) { resolve(null); }
+    });
+    const kv = async (mode, use) => {
+      const db = await gameDb;
+      if (!db) return undefined;
+      return new Promise((resolve) => {
+        const tx = db.transaction("kv", mode);
+        const req = use(tx.objectStore("kv"));
+        tx.oncomplete = () => resolve(req && req.result);
+        tx.onerror = tx.onabort = () => resolve(undefined);
+      });
+    };
+    const forgetFolder = async () => {
+      await kv("readwrite", (s) => s.delete("gameDir")); // a handle an earlier version kept
+      await kv("readwrite", (s) => s.delete("strings"));
+    };
+
+    // Every file under a dropped folder, as {rel, name, file()}. A folder lists its items
+    // in batches, until an empty one.
+    async function dropEntries(root) {
+      const out = [];
+      const list = (dir) => new Promise((ok, no) => {
+        const reader = dir.createReader(), all = [];
+        const next = () => reader.readEntries((batch) => (batch.length ? (all.push(...batch), next()) : ok(all)), no);
+        next();
+      });
+      const walk = async (dir, prefix) => {
+        for (const e of await list(dir)) {
+          if (e.isFile) out.push({ rel: prefix + e.name, name: e.name, file: () => new Promise((ok, no) => e.file(ok, no)) });
+          else await walk(e, prefix + e.name + "/");
+        }
+      };
+      await walk(root, "");
+      return out;
+    }
+
+    // A folder dropped on the page is read as if chosen: `dropGame` is set once the page
+    // takes one. A file dropped anywhere else must not make the browser leave the page.
+    let dropGame = null;
+    const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes("Files");
+    addEventListener("dragover", (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      document.getElementById("setup").classList.toggle("dragging", !!dropGame && !pick.disabled);
+    });
+    addEventListener("dragleave", (e) => { if (!e.relatedTarget) document.getElementById("setup").classList.remove("dragging"); });
+    addEventListener("drop", (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      document.getElementById("setup").classList.remove("dragging");
+      if (!dropGame || pick.disabled) return;
+      // The entries are only handed out during the event itself.
+      const roots = [...e.dataTransfer.items].map((i) => i.webkitGetAsEntry?.()).filter(Boolean);
+      dropGame(roots);
+    });
+
+    function checkGame(entries) {
+      if (!entries.some((e) => /^ui\/mainmenu\.dat$/i.test(e.rel))) {
+        throw new Error("That folder is not a Motocross Madness 2 install (UI/MAINMENU.DAT is missing).");
+      }
+    }
+
+    // LANG.DLL and UILANG.DLL (the menus' text) come with the folder, but a folder
+    // without them is still playable: they are asked for on their own, once, and kept
+    // in the browser for the next visit.
+    async function ensureStrings(wasm, have) {
+      const missing = ["LANG.DLL", "UILANG.DLL"].filter((n) => !have.has(n.toLowerCase()));
+      if (!missing.length) return;
+      const stored = (await kv("readonly", (s) => s.get("strings"))) || {};
+      const got = {};
+      for (const n of missing) if (stored[n]) got[n] = stored[n];
+      if (!missing.every((n) => got[n])) {
+        // The file picker where the browser has one, a plain file input where not.
+        const input = document.createElement("input");
+        input.type = "file"; input.multiple = true; input.accept = ".dll";
+        status.after(input);
+        let arrived;
+        const done = new Promise((r) => { arrived = r; });
+        const take = async (files) => {
+          for (const f of files) {
+            const n = f.name.toUpperCase();
+            if (missing.includes(n)) got[n] = new Uint8Array(await f.arrayBuffer());
+          }
+          const left = missing.filter((n) => !got[n]);
+          if (left.length) status.textContent = "Still needed: " + left.join(" and ") + ".";
+          else arrived();
+        };
+        input.onchange = async () => { await take(input.files); input.value = ""; };
+        const ask = document.createElement("button");
+        ask.className = "btn";
+        ask.textContent = "Choose " + missing.join(" and ");
+        ask.onclick = async () => {
+          if (window.showOpenFilePicker) {
+            try {
+              const picked = await window.showOpenFilePicker({ id: "mm2", multiple: true });
+              await take(await Promise.all(picked.map((h) => h.getFile())));
+              return;
+            } catch (e) {
+              if (e && e.name === "AbortError") return; // cancelled
+            }
+          }
+          input.click();
+        };
+        status.after(ask);
+        status.textContent = `${missing.join(" and ")}, which hold the menus' text, were not in the folder. ` +
+          "They are in the game folder.";
+        await done;
+        ask.remove();
+        input.remove();
+        await kv("readwrite", (s) => s.put({ ...stored, ...got }, "strings"));
+      }
+      for (const n of missing) wasm.add_file(n, got[n]);
+    }
+
+    // Gives the game the files: tracks stay on disk until their event is opened.
+    async function readGame(wasm, entries) {
+      checkGame(entries);
+      const files = entries.filter((e) => KEEP.test(e.name) || !SKIP.test(e.name));
+      let done = 0;
+      for (const e of files) {
+        if (/^teraform\//i.test(e.rel)) {
+          wasm.add_remote_file(e.rel);
+          lazy.set(e.rel, async () => (await e.file()).arrayBuffer());
+          done++;
+          continue;
+        }
+        const bytes = new Uint8Array(await (await e.file()).arrayBuffer());
+        noteCursorFile(e.rel, bytes);
+        wasm.add_file(e.rel, bytes);
+        if (++done % 25 === 0) status.textContent = `Reading files… ${done}/${files.length}`;
+      }
+      const have = new Set(files.map((e) => e.rel.toLowerCase()));
+      await ensureStrings(wasm, have);
+      await addFreeFonts(wasm);
+      const lost = NEEDED.filter((p) => !have.has(p.toLowerCase()));
+      if (lost.length) console.warn("Game files not found in the folder: " + lost.join(", "));
+      await launch(wasm, lost);
+    }
+
+    // The graphics, as the desktop chooses them on its command line: the game's own
+    // drawing without `--enhanced`, or the upgrades with the list after `--enhanced=`.
+    // The engine reads the list (`enhanced_settings`), so the panel shows what it will
+    // draw. The choice is kept in this browser.
+    const UPGRADES = [
+      ["lighting", "Lighting", "Per-pixel light, bumps and highlights on objects"],
+      ["shadows", "Sun shadows", "From every object, in place of the game's own"],
+      ["distance", "Draw distance", "The world goes on past the fog, into haze"],
+      ["bloom", "HDR and bloom", "Bright light glows"],
+      ["ao", "Ambient occlusion", "Contact shadows under bikes, in ruts and corners"],
+      ["sky", "Sky glow", "A glow round the sun and haze on the horizon"],
+      ["clouds", "Real sky", "A drawn sky with clouds in place of the sky box (needs sky glow)"],
+      ["shafts", "Light shafts", "Hills, trees and riders cut shafts into a low sun"],
+      ["ground", "New ground", "Photo materials laid over the painted terrain"],
+      ["smooth", "Smooth hills", "Finer, rounder ground near the camera"],
+      ["grass", "Grass", "3D tufts on the green ground, swaying"],
+      ["surfaces", "Object materials", "Photo grain on Farm's barns, fences and machines (trial)"],
+      ["ruts", "Ruts", "Tyre grooves that stay"],
+      ["dust", "Dust clouds", "Behind the rear tyres; spray in the rain"],
+      ["bikes", "Bikes and riders", "Glossy paint and metal"],
+      ["mud", "Mud", "Dirt cakes onto bikes and riders as they ride"],
+      ["scenery", "Trackside props and crowd", "Hay bales, banners, a paddock and spectators"],
+      ["cinematic", "Replay lens", "Depth of field and motion blur, in replays only"],
+      ["grade", "Colour grade", "Richer colour and contrast: a bolder look"],
+    ];
+    const TIMES = { dawn: 7, morning: 9, noon: 12.5, afternoon: 15.5, dusk: 18 };
+    // "1080p" is read as that many lines at 16:9.
+    const resPixels = (r) => { const h = parseInt(r, 10); return h * h * 16 / 9; };
+    // WebGPU draws 1 or 4 samples a pixel: the 2 and 8 of a preset come out as none and 4.
+    const effectiveMsaa = (n) => (n >= 4 ? 4 : 1);
+    let graphicsList = () => undefined;
+    function setupGraphics(wasm) {
+      const $ = (id) => document.getElementById(id);
+      const [on, off, opts, quality, msaa, res, time, weather, detail, mud] = ["gfx-on", "gfx-off", "gfx-opts",
+        "gfx-quality", "gfx-msaa", "gfx-res", "gfx-time", "gfx-weather", "gfx-detail", "gfx-mud"].map($);
+      const boxes = {};
+      for (const [name, label, note] of UPGRADES) {
+        const l = document.createElement("label");
+        const b = (boxes[name] = document.createElement("input"));
+        b.type = "checkbox";
+        const text = document.createElement("span");
+        const small = document.createElement("small");
+        small.textContent = note;
+        text.append(label, small);
+        l.append(b, text);
+        $("gfx-list").append(l);
+      }
+      const settings = (list) => JSON.parse(wasm.enhanced_settings(list));
+      // What comes first in the list: later items win over the preset, and an hour or
+      // weather of its own turns the real sky on.
+      const head = () => {
+        const h = [];
+        if (quality.value !== "high") h.push("quality=" + quality.value);
+        if (time.value) h.push("time=" + time.value);
+        if (weather.value !== "clear") h.push("weather=" + weather.value);
+        return h;
+      };
+      const numbers = () => {
+        $("gfx-detail-n").textContent = Number(detail.value).toFixed(2);
+        $("gfx-mud-n").textContent = Number(mud.value).toFixed(2);
+      };
+      const show = (s) => {
+        for (const name in boxes) boxes[name].checked = s[name];
+        msaa.value = String(effectiveMsaa(s.msaa));
+        const sizes = [...res.options].map((o) => o.value).filter((r) => r !== "native");
+        res.value = s.pixels === null ? "native" : sizes.find((r) => resPixels(r) === s.pixels) || "1440p";
+        detail.value = s.detail;
+        mud.value = s.mud_start;
+        numbers();
+      };
+      // The shortest list that gives what the panel shows.
+      const build = () => {
+        const items = head();
+        const base = settings(items.join(","));
+        for (const name in boxes) if (boxes[name].checked !== base[name]) items.push((boxes[name].checked ? "" : "no-") + name);
+        if (Number(msaa.value) !== effectiveMsaa(base.msaa)) items.push("msaa=" + msaa.value);
+        if ((res.value === "native" ? null : resPixels(res.value)) !== base.pixels) items.push("resolution=" + res.value);
+        if (Math.abs(detail.value - base.detail) > 1e-3) items.push("detail=" + detail.value);
+        if (Math.abs(mud.value - base.mud_start) > 1e-3) items.push("mud=" + mud.value);
+        return items.join(",");
+      };
+      const save = () => {
+        const list = build();
+        opts.hidden = !on.checked;
+        // What the desktop takes for the same look, for anyone with the console open.
+        console.info("graphics:", on.checked ? "--enhanced" + (list ? "=" + list : "") : "original (no --enhanced)");
+        try { localStorage.setItem("mm2-graphics", JSON.stringify({ enhanced: on.checked, list })); } catch (e) {}
+      };
+      const defaults = () => {
+        quality.value = "high"; time.value = ""; weather.value = "clear";
+        show(settings(""));
+      };
+      // A preset sets everything; an hour or weather only the real sky, as on the desktop.
+      quality.onchange = () => { show(settings(head().join(","))); save(); };
+      time.onchange = weather.onchange = () => { boxes.clouds.checked = settings(head().join(",")).clouds; save(); };
+      $("gfx-reset").onclick = () => { defaults(); save(); };
+      $("gfx").addEventListener("input", () => { numbers(); save(); });
+      defaults();
+      try {
+        const kept = JSON.parse(localStorage.getItem("mm2-graphics") || "null");
+        if (kept) {
+          const list = String(kept.list || "");
+          const s = settings(list);
+          quality.value = (/(?:^|,)quality=(\w+)/.exec(list) || [, "high"])[1];
+          time.value = Object.keys(TIMES).find((k) => TIMES[k] === s.time) || "";
+          weather.value = s.weather;
+          show(s);
+          (kept.enhanced ? on : off).checked = true;
+        }
+      } catch (e) { defaults(); }
+      save();
+      graphicsList = () => (on.checked ? build() : undefined);
+      $("gfx").hidden = false;
+    }
+
+    window.addEventListener("TrunkApplicationStarted", async () => {
+      const wasm = window.wasmBindings;
+      setupGraphics(wasm);
+      const dev = new URLSearchParams(location.search).get("game");
+      // The kept menu text is forgotten, and a development load (?game=) is left for the picker.
+      change.addEventListener("click", async () => {
+        await forgetFolder();
+        if (dev) location.assign(location.pathname);
+        else location.reload();
+      });
+      const problems = await preflight();
+      if (problems.length) {
+        showProblems(problems);
+        return;
+      }
+      if (dev) {
+        devLoad(wasm, dev).catch((e) => { status.innerHTML = `<span class="err">${String(e)}</span>`; });
+        return;
+      }
+      const fail = (e) => {
+        document.getElementById("setup").style.display = "";
+        document.getElementById("mm2-canvas").style.display = "none";
+        status.innerHTML = `<span class="err"></span>`;
+        status.firstChild.textContent = String(e && e.message || e);
+        picking(true);
+        choose.style.display = "";
+      };
+
+      picking(true);
+      status.textContent = "";
+      pick.addEventListener("change", async () => {
+        const entries = [...pick.files].map((f) => ({
+          // webkitRelativePath is "<picked folder>/<path inside it>".
+          rel: f.webkitRelativePath.split("/").slice(1).join("/"), name: f.name, file: async () => f,
+        }));
+        picking(false);
+        status.textContent = "Reading files…";
+        try { await readGame(wasm, entries); } catch (e) { fail(e); }
+      });
+      dropGame = async (roots) => {
+        if (roots.length !== 1 || !roots[0].isDirectory) {
+          fail(new Error("Drop the game folder itself (the one with UI, RES and TERAFORM), not files."));
+          return;
+        }
+        picking(false);
+        status.textContent = "Reading files…";
+        try { await readGame(wasm, await dropEntries(roots[0])); } catch (e) { fail(e); }
+      };
+    });
+  </script>
+</body>
+</html>

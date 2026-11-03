@@ -1,0 +1,13 @@
+[package]
+name = "mm2-indeo"
+description = "Indeo Video Interactive 5 (IV50) decoder, ported from FFmpeg's indeo5 decoder"
+version.workspace = true
+edition.workspace = true
+# A port of FFmpeg's libavcodec/indeo5.c, ivi.c and ivi_dsp.c, so it keeps
+# FFmpeg's licence rather than the workspace's.
+license = "LGPL-2.1-or-later"
+
+[dependencies]
+
+[dev-dependencies]
+mm2-formats = { version = "0.2.1", path = "../mm2-formats" }

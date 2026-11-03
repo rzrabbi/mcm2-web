@@ -1,0 +1,6 @@
+[package]
+name = "mm2-formats"
+description = "Readers for Motocross Madness 2 data files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true

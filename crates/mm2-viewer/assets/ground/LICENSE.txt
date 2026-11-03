@@ -1,0 +1,17 @@
+Ground materials from ambientCG (https://ambientcg.com), CC0 1.0 Universal
+(public domain), scaled to 512x512 and packed: *_albedo.png = colour RGB +
+roughness A, *_normal.png = OpenGL normal RGB + displacement A.
+
+dirt   = Ground048
+packed = Ground103
+grass  = Grass004
+rock   = Rock030
+sand   = Ground080
+
+Object materials (laid only as grain over the game's own object textures,
+on the trial track Farm):
+
+wood     = Wood049
+metal    = Metal054B
+concrete = Concrete035
+straw    = ThatchedRoof001A
