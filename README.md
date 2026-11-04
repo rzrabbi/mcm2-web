@@ -8,12 +8,18 @@ open-source Rust engine by [crspytopgn](https://github.com/crspytopgn). The engi
 physics, the file formats and the menus are their work; this project adds the web port.
 See [Credits](#credits).
 
+> **This is the `online-multiplayer` branch.** It adds online multiplayer to mcm2-web: race friends
+> over the internet, from your own copies of the game. It is kept as a branch of its own, and is
+> not meant to be merged into `main`, because it needs a relay server that you run, which `main`
+> (the plain, self-contained build) does not. Everything else is the same. See
+> [Multiplayer](#multiplayer) for what it does and how to set it up.
+
 > **This repository contains no game files.** The engine reads the tracks, models,
 > textures, sounds and menus from an install of the game that you own, the way OpenMW does
 > for Morrowind. Nothing of the game is hosted or shipped here: no data, no artwork, no
 > code from the original game.
 
-[Why](#why-a-web-version) · [Play](#play) · [How it works](#how-it-works) · [Build](#build) · [Deploy](#deploy-to-github-pages) · [Credits](#credits) · [Legal](#legal) · [Licence](#licence)
+[Why](#why-a-web-version) · [Play](#play) · [Multiplayer](#multiplayer) · [How it works](#how-it-works) · [Build](#build) · [Deploy](#deploy-to-github-pages) · [Credits](#credits) · [Legal](#legal) · [Licence](#licence)
 
 ## Why a web version
 
@@ -45,6 +51,38 @@ your computer and there is nothing to log in to.
 
 Controls are the original's: the arrow keys to ride, W/S to lean, Z/X for stunts. Xbox and
 PlayStation gamepads work too.
+
+## Multiplayer
+
+This branch adds the game's network mode to the browser. A browser cannot listen for connections,
+so players meet through a small **relay server** (`tools/relay/relay.py`, one Python file). It
+passes the game's network packets between them and never sees game files, which stay in each
+player's browser. Everyone brings their own copy of the game, the same version.
+
+What you can do, from the **Multiplayer** tab under the folder card:
+
+* **Host a room:** name it, press **Create room**, share its five-character code, and press
+  **Enter lobby**. Tick *Show in the server browser* to make it public.
+* **Join a room:** pick one in the server browser, or type its code. You are counted once you
+  are in the lobby.
+* **In the game:** Multiplayer, then TCP/IP. **Internet** is the server browser; **LAN** joins a
+  private room by its code.
+* **Races** start once every player has the track; anyone who lacks it or has left is left out.
+
+**Setting it up.** You need a relay for the people you want to play with.
+
+```sh
+pip install -r tools/relay/requirements.txt
+python tools/relay/relay.py            # 127.0.0.1:2108
+cd crates/mm2-viewer && trunk serve --port 8080
+```
+
+A page on `localhost` finds that relay by itself; open it in two windows to try. To play with
+friends, run the relay on a server behind HTTPS (`docker compose up -d --build` in
+`tools/relay`, and a reverse proxy such as Caddy), then give everyone the page's address
+with `?relay=wss://relay.example.com`, or have them enter the relay under *Relay server* in the
+tab. A site on GitHub Pages also needs its origin in the relay's `ALLOWED_ORIGINS`.
+[docs/multiplayer.md](docs/multiplayer.md) has the full setup, the settings and troubleshooting.
 
 ### Unsupported devices and browsers
 
@@ -96,8 +134,9 @@ trunk serve --port 8080        # development server at http://127.0.0.1:8080
 trunk build --release          # optimised static files in dist/
 ```
 
-To skip the folder picker while developing, serve your install locally and open the page
-with `?game=`:
+To try multiplayer while developing, also run the relay (`python tools/relay/relay.py`; its tests
+run with `python -m unittest discover -s tools/relay/tests`). To skip the folder picker while
+developing, serve your install locally and open the page with `?game=`:
 
 ```sh
 python tools/serve_game.py "/path/to/Motocross Madness 2" --port 8081
@@ -121,6 +160,11 @@ The release build is plain static files, and WebGPU needs HTTPS, which Pages pro
 
 The workflow builds with `--public-url /mcm2-web/`; change that if your repository has a
 different name. Publish the engine and the page only, never the game's files.
+
+On this branch the workflow still runs on pushes to `main`; change `branches` in `pages.yml` if you
+publish from here. Multiplayer on a Pages site also needs a relay on HTTPS: set the relay in
+`<meta name="mm2-relay">` in `index.html` so visitors have it already, and put the site's origin
+(`https://you.github.io`) in the relay's `ALLOWED_ORIGINS`.
 
 ## Credits
 

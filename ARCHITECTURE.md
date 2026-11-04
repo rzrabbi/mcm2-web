@@ -153,12 +153,15 @@ The web port is the work of this repository. In short:
 │   ├── mm2-tools/             Data inspection CLI (binary)
 │   └── mm2-viewer/            The game: engine + web page (binary)
 │       ├── index.html         The web page (Trunk entry point)
+│       ├── mp.js              Multiplayer tab and relay connection (copied into the build by Trunk)
 │       ├── favicon.png
 │       ├── fonts/             Liberation Sans (SIL OFL 1.1)
 │       ├── assets/ground/     ambientCG materials (CC0)
 │       ├── build.rs           Puts the icon on the Windows .exe
 │       └── src/               About 50 modules, see §5.3
+├── docs/multiplayer.md        Online multiplayer: how it plays, relay setup, troubleshooting
 ├── tools/
+│   ├── relay/                 The multiplayer relay (relay.py), its Dockerfile, compose file and tests
 │   ├── serve_game.py          Dev server: serves a local install to the page
 │   └── upscale-textures.sh    Optional Real-ESRGAN texture upscaling
 ```
@@ -322,7 +325,8 @@ browser:
   task runs on a thread.
 - `FILL_MENUS` and the wide-layout code make the 640×480 menus fill any window
   shape without distorting text and icons.
-- `COMING_SOON` (in `frontend.rs`) greys out multiplayer in the browser (see §7).
+- `COMING_SOON` (in `frontend.rs`) greys out multiplayer in the browser. It is off on the
+  `online-multiplayer` branch, where the network session runs over a WebSocket relay (see §7).
 
 ### 5.5 Physics and rules (`crates/mm2-physics`)
 
@@ -425,8 +429,11 @@ All dated 2026-11-02 unless noted.
 
 **Not working or not available**
 - **Multiplayer in the browser:** the port's network code uses sockets, which
-  browsers do not offer. The Multiplayer pull-down shows "COMING SOON" and its
-  TCP/IP button is greyed out. Multiplayer still works in the desktop build.
+  browsers do not offer. On `main` the Multiplayer pull-down shows "COMING SOON" and its
+  TCP/IP button is greyed out; multiplayer works in the desktop build. The
+  `online-multiplayer` branch runs the same session over a WebSocket relay that the players
+  run (see [docs/multiplayer.md](docs/multiplayer.md)); it keeps `main`'s self-contained design
+  by living on a branch of its own.
 - **Moto-Tag:** multiplayer only, so unavailable in the browser.
 - **Random gates (Baja):** the option shows but does nothing, in the desktop
   build too. The original's random gate generation has not been
@@ -474,7 +481,7 @@ These were found in the review on 2026-11-02:
 7. **Release profile:** the workspace has no `[profile.release]` tuning (LTO,
    `codegen-units = 1`) yet; it might shrink and speed up the wasm further.
 8. **Random gates** and **browser multiplayer** (see §7) remain the two missing
-   game features.
+   game features on `main`; the `online-multiplayer` branch has the second.
 
 ## 9. Licences and credits
 

@@ -18,3 +18,14 @@ jobs:
       - run: cargo test --release --workspace
       - name: Check the browser build
         run: cargo check --release --target wasm32-unknown-unknown -p mm2-viewer --no-default-features --features audio,gamepad
+
+  relay:
+    # The multiplayer relay (a Python file); it does not touch the engine.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r tools/relay/requirements.txt
+      - run: python -m unittest discover -s tools/relay/tests

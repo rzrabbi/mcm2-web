@@ -197,6 +197,9 @@ enum Screen {
 }
 
 pub struct Frontend {
+    /// The start page asked for the Multiplayer lobby straight away (browser only).
+    #[cfg(target_arch = "wasm32")]
+    lobby_wanted: bool,
     ui: Ui,
     screen: Screen,
     event: EventKind,
@@ -265,12 +268,33 @@ const ENGINE_SIZES: [(u32, &str); 5] = [
 const PAGE: (f32, f32) = (16.0, 41.0);
 
 impl Frontend {
+    /// In the browser, the start page's "Enter lobby" opens the Multiplayer lobby once the
+    /// main menu is up (a profile box, if there is one, first).
+    #[cfg(target_arch = "wasm32")]
+    fn open_wanted_lobby(&mut self) {
+        if !self.lobby_wanted || !matches!(self.screen, Screen::Main(_)) || self.boxes.is_open() {
+            return;
+        }
+        self.lobby_wanted = false;
+        let mut cx = Cx {
+            ui: &mut self.ui,
+            audio: None,
+            user: &mut self.user,
+            now: self.now,
+        };
+        if let Some(m) = screens::multi::Multi::open(&mut cx) {
+            self.screen = Screen::Extra(Box::new(m));
+        }
+    }
+
     pub fn new(game: &Path) -> Option<Frontend> {
         let mut ui = Ui::new(game);
         let main = Dlg::open(&mut ui, "MAINMENU", (0.0, 0.0))?;
         let user = screens::User::load(&ui);
         ui.volume = user.profile.sound.ui_gain();
         let mut f = Frontend {
+            #[cfg(target_arch = "wasm32")]
+            lobby_wanted: crate::net::want_lobby(),
             ui,
             screen: Screen::Main(main),
             event: EventKind::Supercross,
@@ -321,7 +345,7 @@ impl Frontend {
         profiles::fill(&mut cx, d);
         // The connections DirectPlay offered (`0x44c1d0`): the port has
         // its own TCP/IP play to come, and none of the others. In the
-        // browser there is no play over the network yet (`COMING_SOON`).
+        // browser it goes through the page's WebSocket relay (`COMING_SOON`).
         for (name, on) in [
             ("ButTCP", !COMING_SOON),
             ("ButIPX", false),
@@ -337,6 +361,10 @@ impl Frontend {
     /// The logos before the main menu, unless the player's profile
     /// turned the intro off.
     pub fn intro(&mut self) {
+        #[cfg(target_arch = "wasm32")]
+        if self.lobby_wanted {
+            return;
+        }
         if !self.user.profile.game.intro_movie && !self.user.profile.name.is_empty() {
             return;
         }
@@ -1499,6 +1527,8 @@ impl Frontend {
     fn draw_screen(&mut self, gfx: &mut Gfx, now: f32, progress: f32) {
         let dt = (now - self.now).max(0.0);
         self.now = now;
+        #[cfg(target_arch = "wasm32")]
+        self.open_wanted_lobby();
         self.events_tick(dt);
         if let Some(event) = self.awaiting {
             let folder = self.ui.game().join(event.folder());
@@ -1626,9 +1656,9 @@ impl Frontend {
     }
 }
 
-/// Multiplayer is not in the browser build yet: its connection buttons are
-/// greyed and the Multiplayer pull-down's screen says so.
-const COMING_SOON: bool = cfg!(target_arch = "wasm32");
+/// Whether the Multiplayer pull-down's screen is dimmed with "COMING SOON".
+/// The browser plays over a WebSocket relay (`net`), so it is not.
+const COMING_SOON: bool = false;
 
 /// Dims the Multiplayer pull-down's screen (the connection icons) and writes
 /// "COMING SOON" across it.
