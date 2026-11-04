@@ -156,9 +156,14 @@ class Relay:
 
     def client_ip(self, ws):
         if self.trust_proxy:
-            forwarded = ws.request.headers.get("X-Forwarded-For", "")
-            if forwarded.strip():
-                return forwarded.split(",")[-1].strip()
+            try:
+                headers = ws.request.headers
+                raw = headers.get_all("X-Forwarded-For") if hasattr(headers, "get_all") else [headers.get("X-Forwarded-For", "")]
+                forwarded = ",".join(f for f in raw if f)
+                if forwarded.strip():
+                    return forwarded.split(",")[-1].strip()
+            except Exception:
+                pass
         peer = ws.remote_address
         return peer[0] if peer else "?"
 

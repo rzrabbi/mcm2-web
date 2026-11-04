@@ -70,20 +70,39 @@ Put the relay where everyone can reach it and give it HTTPS, because a page serv
 
    or without it: `python tools/relay/relay.py --host 127.0.0.1 --port 2108`.
 
-2. **Add HTTPS with a reverse proxy** that forwards WebSocket traffic to port 2108. With
-   [Caddy](https://caddyserver.com) that is the whole configuration:
+2. **Add HTTPS with a reverse proxy** that forwards WebSocket traffic to port 2108.
+   Any reverse proxy or proxy manager (Caddy, Nginx, Apache, Traefik, HAProxy, NPM, etc.)
+   works.
 
-   ```
-   relay.example.com {
-       reverse_proxy 127.0.0.1:2108
-   }
-   ```
-
-   With Nginx, add `proxy_http_version 1.1;`, `proxy_set_header Upgrade $http_upgrade;` and
-   `proxy_set_header Connection "upgrade";` to the `location` that proxies to the relay. With
-   Nginx Proxy Manager, turn on *Websockets Support* for the host. Set `TRUST_PROXY=1` for the
-   relay (the compose file does) so it takes each player's address from the proxy's
-   `X-Forwarded-For` header, and keep that header trustworthy.
+   - **WebSocket upgrades:** Ensure HTTP/1.1 and WebSocket upgrade headers are passed to the relay.
+     If configuring upgrade headers manually (e.g. Nginx or proxy managers without a one-click
+     WebSocket toggle), use a dynamic connection upgrade header rather than a static `"upgrade"`
+     string, so regular HTTP requests like `/mp/stats` and `/mp/rooms` keep standard keep-alive
+     connections:
+     ```nginx
+     proxy_http_version 1.1;
+     proxy_set_header Upgrade $http_upgrade;
+     proxy_set_header Connection $connection_upgrade;
+     proxy_set_header Host $host;
+     ```
+   - **Hosting the relay under a subpath (e.g. `/mp/`):**
+     If mounting the relay under a subpath on the same domain as the game, always specify the route
+     with a trailing slash (`/mp/`, never `/mp`). In many proxies, a prefix rule for `/mp` will
+     also match the start page's script `/mp.js`, inadvertently routing that script to the relay
+     and breaking page startup (`mm2NetWantLobby is not defined`).
+   - **Caddy example:**
+     ```
+     relay.example.com {
+         reverse_proxy 127.0.0.1:2108
+     }
+     ```
+   - **CDNs and edge proxies (e.g. Cloudflare):**
+     If proxying through an edge CDN, verify that WebSocket connections and long session timeouts
+     are supported. If connection limits or timeouts cause disconnects during races, bypass edge
+     proxying (DNS-only) for the relay hostname.
+   - **Client IP forwarding:**
+     Set `TRUST_PROXY=1` for the relay (the compose file does) so it takes each player's address
+     from the proxy's `X-Forwarded-For` header.
 
 3. **Tell the relay which page may use it.** A page on another host than the relay is refused
    unless its origin is listed. Set `ALLOWED_ORIGINS` to the page's origin, for example
@@ -121,8 +140,16 @@ Anyone who knows a room's code can join it, so a private room is as private as i
 
 - **"The relay is not reachable":** check the address, that the relay is running, and for a
   page on HTTPS that the address starts with `wss://` and its certificate is valid.
+- **"mm2NetWantLobby is not defined" or 502 on `mp.js`:** The reverse proxy route was configured as
+  `/mp` instead of `/mp/`. The proxy intercepted `/mp.js` and routed the client script to the relay
+  instead of the web server. Change the reverse proxy route to `/mp/`.
 - **The relay refuses the connection ("origin not allowed"):** add the page's origin to
   `ALLOWED_ORIGINS`.
+- **Relay crashes with `MultipleValuesError` on `X-Forwarded-For`:** Occurs if an upstream proxy
+  passes multiple `X-Forwarded-For` header lines. Handled in `relay.py` by aggregating all forwarded
+  header lines.
+- **502 Bad Gateway on `/mp/stats`:** Check that the proxy's `Connection` header is dynamic
+  (`$connection_upgrade`) rather than statically set to `"upgrade"` on non-WebSocket HTTP requests.
 - **"No room has that code" / "The host has not opened the lobby yet":** the host has not pressed
   **Enter lobby** yet, or the room was deleted after 5 minutes.
 - **A player is left out of the race:** their game does not have the host's track. Check that
