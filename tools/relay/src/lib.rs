@@ -1838,9 +1838,9 @@ mod tests {
         let port = srv.addr.port();
 
         let mut ws = connect_ws(port, "/mp/ws").await;
-        assert_eq!(ask(&mut ws, "not json").await["reason"].as_str_lossy(), "bad_request");
-        assert_eq!(ask(&mut ws, r#"{"t":"nope"}"#).await["reason"].as_str_lossy(), "bad_request");
-        assert_eq!(ask(&mut ws, "[1]").await["reason"].as_str_lossy(), "bad_request");
+        assert_eq!(ask(&mut ws, "not json")["reason"].as_str_lossy(), "bad_request");
+        assert_eq!(ask(&mut ws, r#"{"t":"nope"}"#)["reason"].as_str_lossy(), "bad_request");
+        assert_eq!(ask(&mut ws, "[1]")["reason"].as_str_lossy(), "bad_request");
 
         srv.relay.with_state(|st| st.limits.first_message_seconds = 0.15);
         let mut silent = connect_ws(port, "/mp/ws").await;
