@@ -8,22 +8,25 @@ open-source Rust engine by [crspytopgn](https://github.com/crspytopgn). The engi
 physics, the file formats and the menus are their work; this project adds the web port.
 See [Credits](#credits).
 
-> **This is the `online-multiplayer` branch.** It adds online multiplayer to mcm2-web: race friends
-> over the internet, from your own copies of the game. It is kept as a branch of its own, and is
-> not meant to be merged into `main`, because it needs a relay server that you run, which `main`
-> (the plain, self-contained build) does not. Everything else is the same. See
-> [Multiplayer](#multiplayer) for what it does and how to set it up.
+> **Online Multiplayer:** Online multiplayer is supported via a lightweight relay server (`tools/relay`,
+> binary `mm2-relay`). The static web build serves only the client-side game engine (no central
+> multiplayer servers are hosted). To race with friends, you can host your own relay server
+> by following the setup guide in [docs/multiplayer.md](docs/multiplayer.md).
+>
+> **Important:** In multiplayer, every player must provide their own installed copy of the game. The host
+> does not share or stream game files, and the relay only passes race synchronization packets—no game files
+> or assets are ever uploaded or transferred between players.
 
 > **This repository contains no game files.** The engine reads the tracks, models,
 > textures, sounds and menus from an install of the game that you own, the way OpenMW does
 > for Morrowind. Nothing of the game is hosted or shipped here: no data, no artwork, no
 > code from the original game.
 
-[Why](#why-a-web-version) · [Play](#play) · [Multiplayer](#multiplayer) · [How it works](#how-it-works) · [Build](#build) · [Deploy](#deploy-to-github-pages) · [Credits](#credits) · [Legal](#legal) · [Licence](#licence)
+[Why](#why-a-web-version) · [Play](#play) · [Multiplayer](#multiplayer) · [How it works](#how-it-works) · [Build](#build) · [Serving and deployment](#serving-and-deployment) · [Credits](#credits) · [Legal](#legal) · [Licence](#licence)
 
 ## Why a web version
 
-Motocross Madness 2 was the first game I ever played on a PC, in the early 2000s. I loved
+MCM2 was the first game I ever played on a PC, in the early 2000s. I loved
 it as a kid, and I wanted to feel that nostalgia again without the hassle.
 
 The hassle is real. The game isn't sold anywhere any more, and support for it ended long
@@ -54,7 +57,7 @@ PlayStation gamepads work too.
 
 ## Multiplayer
 
-This branch adds the game's network mode to the browser. A browser cannot listen for connections,
+mcm2-web includes the game's network mode in the browser. A browser cannot listen for connections,
 so players meet through a small **relay server** (`tools/relay`, a lightweight Rust binary `mm2-relay`). It
 passes the game's network packets between them and never sees game files, which stay in each
 player's browser. Everyone brings their own copy of the game, the same version.
@@ -80,7 +83,7 @@ A page on `localhost` finds that relay by itself; open it in two windows to try.
 friends, run the relay on a server behind HTTPS (`docker compose up -d --build` in
 `tools/relay`, and a reverse proxy such as Caddy), then give everyone the page's address
 with `?relay=wss://relay.example.com`, or have them enter the relay under *Relay server* in the
-tab. A site on GitHub Pages also needs its origin in the relay's `ALLOWED_ORIGINS`.
+tab. A hosted site also needs its origin (e.g. `https://example.com`) in the relay's `ALLOWED_ORIGINS`.
 [docs/multiplayer.md](docs/multiplayer.md) has the full setup, the settings and troubleshooting.
 
 ### Unsupported devices and browsers
@@ -149,21 +152,26 @@ This repository has no desktop launcher. If you want the desktop version with it
 (setting up the game from a CD image, disc or install folder) and track downloads, use
 [openmcm2](https://github.com/crspytopgn/openmcm2) itself.
 
-## Deploy to GitHub Pages
+## Serving and deployment
 
-The release build is plain static files, and WebGPU needs HTTPS, which Pages provides.
+The web build produces completely self-contained static assets in `crates/mm2-viewer/dist`:
 
-1. Set **Settings > Pages > Source** to **GitHub Actions**.
-2. Push to `main`. [`pages.yml`](.github/workflows/pages.yml) builds the site with Trunk
-   and publishes it.
+```sh
+cd crates/mm2-viewer
+trunk build --release
+```
 
-The workflow builds with `--public-url /mcm2-web/`; change that if your repository has a
-different name. Publish the engine and the page only, never the game's files.
+These static files can be served by any static host or web server (Cloudflare Pages, Cloudflare Workers,
+GitHub Pages, Vercel, Netlify, Nginx, Caddy, Apache, etc.).
 
-On this branch the workflow still runs on pushes to `main`; change `branches` in `pages.yml` if you
-publish from here. Multiplayer on a Pages site also needs a relay on HTTPS: set the relay in
-`<meta name="mm2-relay">` in `index.html` so visitors have it already, and put the site's origin
-(`https://you.github.io`) in the relay's `ALLOWED_ORIGINS`.
+**Requirements and considerations:**
+* **HTTPS is required:** WebGPU works only on secure contexts (`https://` or `http://localhost`). Ensure your host serves the site over HTTPS.
+* **Base URL / Subpaths:** If hosting under a subfolder or path (such as `/mcm2-web/`), build with Trunk's `--public-url` flag:
+  ```sh
+  trunk build --release --public-url /your-subpath/
+  ```
+* **Publish engine only:** Never upload or commit the original game's asset files to the static host.
+* **Multiplayer with a hosted site:** Web browsers on HTTPS can only connect to secure WebSocket relays (`wss://`). Set your relay's public address in `<meta name="mm2-relay" content="wss://relay.example.com">` in `index.html` (or enter it in the Multiplayer tab), and make sure your frontend domain is listed in the relay's `ALLOWED_ORIGINS`.
 
 ## Credits
 
@@ -173,9 +181,6 @@ publish from here. Multiplayer on a Pages site also needs a relay on HTTPS: set 
 | Indeo 5 decoder (`crates/mm2-indeo`), a port of [FFmpeg](https://ffmpeg.org)'s | Maxim Poliakovski and the FFmpeg developers | LGPL 2.1 or later |
 | Ground materials for the optional enhanced graphics, from [ambientCG](https://ambientcg.com) | ambientCG | CC0 |
 | *Motocross Madness 2* | Rainbow Studios | © Microsoft |
-
-To support the engine's author, you can
-[sponsor crspytopgn on GitHub](https://github.com/sponsors/crspytopgn).
 
 ## Legal
 

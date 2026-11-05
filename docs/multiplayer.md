@@ -1,10 +1,15 @@
 # Online multiplayer
 
-This branch (`online-multiplayer`) adds network play to the browser build. The page and the
-game files stay as they are in `main`: nothing of the game is shipped, and every player runs the
-game from their own copy. What is new is a small **relay server** that players use to find each
-other, because a browser cannot listen for connections the way the desktop game's TCP and UDP
-network play does.
+This document explains online network play for the browser build. The static web build
+contains only the client-side game engine—it does not include or connect to a
+central multiplayer server by default. To race with friends online, you or someone in your group
+runs a lightweight **relay server** (`tools/relay`, binary `mm2-relay`), because web browsers cannot
+listen for raw TCP/UDP connections directly.
+
+> **Important:** Every player must load their own copy of Motocross Madness 2 into their browser.
+> The host does **not** share, stream, or distribute its game files to guests. The relay server
+> acts solely as an encrypted packet forwarder for player position and race events; no game assets,
+> textures, or tracks ever touch the relay.
 
 ```
  your browser ──WebSocket──┐
@@ -58,7 +63,7 @@ windows (a hidden tab pauses the game) and host in one and join in the other.
 ### Play with friends over the internet
 
 Put the relay where everyone can reach it and give it HTTPS, because a page served over HTTPS
-(GitHub Pages, any real host) can only open a secure `wss://` socket.
+(Cloudflare Pages, GitHub Pages, or any secure host) can only open a secure `wss://` socket.
 
 1. **Run the relay** on a server or VPS, with Docker:
 
