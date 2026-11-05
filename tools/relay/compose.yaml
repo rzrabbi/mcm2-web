@@ -5,6 +5,7 @@ services:
   mcm2-relay:
     build: .
     container_name: mcm2-relay
+    init: true
     restart: unless-stopped
     environment:
       # Behind a reverse proxy: take the player's address from its X-Forwarded-For header.

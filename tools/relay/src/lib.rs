@@ -1144,6 +1144,7 @@ impl Relay {
                 h.close(CLOSE_EXPIRED, "expired");
             }
         }
+        st.bad_joins.retain(|_, &mut (_, start)| now - start <= 60.0);
     }
 
     fn delete_room_locked(st: &mut RelayState, code: &str) {
@@ -1186,19 +1187,23 @@ impl RelayState {
 
     fn too_many_bad_joins(&mut self, ip: &str) -> bool {
         let now = now_secs();
-        let (mut count, mut start) = self.bad_joins.get(ip).copied().unwrap_or((0, now));
+        let Some(&(count, start)) = self.bad_joins.get(ip) else {
+            return false;
+        };
         if now - start > 60.0 {
-            count = 0;
-            start = now;
+            self.bad_joins.remove(ip);
+            return false;
         }
-        self.bad_joins.insert(ip.to_string(), (count, start));
         count >= self.limits.bad_joins_per_minute
     }
 
     fn note_bad_join(&mut self, ip: &str) {
         let now = now_secs();
-        let (count, start) = self.bad_joins.get(ip).copied().unwrap_or((0, now));
-        self.bad_joins.insert(ip.to_string(), (count + 1, start));
+        let (count, start) = match self.bad_joins.get(ip).copied() {
+            Some((c, s)) if now - s <= 60.0 => (c + 1, s),
+            _ => (1, now),
+        };
+        self.bad_joins.insert(ip.to_string(), (count, start));
     }
 
     fn hosted_reply(&self, room: &Room) -> String {
@@ -2581,7 +2586,10 @@ async fn handle_ws(mut ws: WebSocketStream<TcpStream>, ip: String, relay: Arc<Re
                 }
             }
         } else {
-            ws_rx.next().await
+            match tokio::time::timeout(Duration::from_secs(60), ws_rx.next()).await {
+                Ok(m) => m,
+                Err(_) => break,
+            }
         };
 
         let Some(Ok(msg)) = next_msg else {

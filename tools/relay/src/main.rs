@@ -45,7 +45,7 @@ fn parse_args() -> Result<(String, u16, bool), String> {
     Ok((host, port, healthcheck))
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> ExitCode {
     let (host, port, healthcheck) = match parse_args() {
         Ok(v) => v,
@@ -89,7 +89,7 @@ async fn main() -> ExitCode {
         }
     });
 
-    std::future::pending::<()>().await;
+    let _ = tokio::signal::ctrl_c().await;
     ExitCode::SUCCESS
 }
 
