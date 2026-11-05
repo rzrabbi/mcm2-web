@@ -125,6 +125,7 @@
     wantLobby: false,   // the start page asked the game to open the lobby straight away
     pendingJoin: "",    // a room code the game joins once it is in its lobby (nobody is counted before)
     error: "",          // why the last host or join failed
+    ping: null,         // last round-trip time to the relay (ms), or null
     on: (fn) => listeners.add(fn),
     changed() {
       if (net.state === "hosting") holdRoom(); else dropRoom();
@@ -305,6 +306,7 @@
     if (String(raw || "").trim() && !next) throw new Error("That is not a relay address.");
     if (net.state !== "idle") net.leave();
     relay = next;
+    net.ping = null;
     if (next) store.set(RELAY_KEY, next.text); else store.remove(RELAY_KEY);
     net.changed();
   };
@@ -378,11 +380,19 @@
   const say = (text, bad) => { el.msg.textContent = text || ""; el.msg.classList.toggle("err", !!bad); };
   const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
+  // A guest's frames go visitor -> relay -> host, so the relay leg should stay well under half the budget.
+  const pingTier = (ms) => (ms <= 60 ? "good" : ms <= 120 ? "ok" : ms <= 200 ? "warn" : "bad");
+
   const showStats = (s, why) => {
-    el.stats.textContent = s
-      ? `${plural(s.public_rooms, "public room", "public rooms")} · ${plural(s.players, "player", "players")} online`
-      : why || "Server offline";
     el.stats.classList.toggle("off", !s);
+    if (!s) { el.stats.textContent = why || "Server offline"; return; }
+    const text = `${plural(s.public_rooms, "public room", "public rooms")} · ${plural(s.players, "player", "players")} online`;
+    if (net.ping == null) { el.stats.textContent = text; return; }
+    const span = document.createElement("span");
+    span.className = `mpping ${pingTier(net.ping)}`;
+    span.textContent = `${net.ping} ms relay`;
+    span.title = `Your round-trip time to this relay server (${net.ping} ms).\nTotal in-game delay to other riders also depends on the host's connection to the relay.`;
+    el.stats.replaceChildren(text + " · ", span);
   };
 
   // A player may join another room while hosting one nobody has entered (it is deleted in time).
@@ -421,10 +431,14 @@
 
   let polling = 0;
   const refresh = async () => {
-    if (!relay) { showStats(null, "No relay server set"); showRooms(null); return; }
-    const [s, r] = await Promise.allSettled([net.stats(), net.rooms()]);
-    showStats(s.status === "fulfilled" ? s.value : null);
-    showRooms(r.status === "fulfilled" ? r.value : null);
+    if (!relay) { net.ping = null; showStats(null, "No relay server set"); showRooms(null); return; }
+    // Fetching `/rooms` first warms the HTTP keep-alive connection so `/stats` times one round-trip.
+    const r = await net.rooms().catch(() => null);
+    const t0 = performance.now();
+    const s = await net.stats().catch(() => null);
+    net.ping = s ? Math.round(performance.now() - t0) : null;
+    showStats(s);
+    showRooms(r);
   };
   const visible = () => $("mp").classList.contains("on") && !document.hidden;
   const poll = () => { if (visible()) refresh(); polling = setTimeout(poll, 3000); };
