@@ -13,6 +13,7 @@ path = "src/main.rs"
 bytes = "1.12.1"
 futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
 getrandom = "0.4.3"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time", "signal"] }
 tokio-tungstenite = "0.30.0"
+
 
