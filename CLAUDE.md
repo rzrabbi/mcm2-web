@@ -41,9 +41,9 @@ cd crates/mm2-viewer
 trunk serve --port 8080                               # dev server (unoptimised wasm)
 trunk build --release                                 # optimised build in dist/ (runs wasm-opt)
 
-python tools/serve_game.py "<game folder>" --port 8081  # then open :8080/?game=http://127.0.0.1:8081
-python tools/relay/relay.py                           # the multiplayer relay (a page on localhost finds :2108)
-python -m unittest discover -s tools/relay/tests      # the relay's tests (needs the websockets package)
+cargo run --release --bin serve-game -- "<game folder>" --port 8081  # then open :8080/?game=http://127.0.0.1:8081
+cargo run --release --bin mm2-relay                   # the multiplayer relay (a page on localhost finds :2108)
+cargo test --release -p mm2-relay                     # the relay's tests
 cargo run --release -p mm2-viewer -- "<game folder>"    # desktop viewer
 ```
 

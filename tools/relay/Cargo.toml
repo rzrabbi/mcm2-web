@@ -1,0 +1,18 @@
+[package]
+name = "mm2-relay"
+description = "WebSocket relay server for Motocross Madness 2 browser multiplayer"
+version = "0.2.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "mm2-relay"
+path = "src/main.rs"
+
+[dependencies]
+bytes = "1.12.1"
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
+getrandom = "0.4.3"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time"] }
+tokio-tungstenite = "0.30.0"
+

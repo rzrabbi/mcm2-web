@@ -1,7 +1,7 @@
 // Online multiplayer for the start page: the room (through a relay server) and the Multiplayer tab.
 //
 // A browser cannot listen for connections, so network play goes through a small WebSocket relay
-// (`tools/relay/relay.py`): one player's browser hosts a room, the others join it by its code, and
+// (`tools/relay`): one player's browser hosts a room, the others join it by its code, and
 // the relay passes the game's packets between them. The relay is yours to run; see
 // docs/multiplayer.md. The page learns its address from, in order: `?relay=` in the page's
 // address, the address saved in this browser (Multiplayer tab), `<meta name="mm2-relay">` in
@@ -13,7 +13,7 @@
 //
 //   mm2net.host({name, public, info, parked}) -> Promise<{code}>   open a room, as its host
 //   mm2net.join(code)                 -> Promise<{code, id, name}>
-//   mm2net.send(id, bytes)            host: to guest `id` (255 = all guests); guest: to the host
+//   mm2net.send(id, bytes)            host: to guest `id` (255 = all, 0x80|id = all but id); guest: to the host
 //   mm2net.recv()                     -> next event or null:
 //                                        {peer, up}      host: a guest came or went
 //                                        {from, data}    a frame (from: guest id, or 0 = host)

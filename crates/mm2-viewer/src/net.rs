@@ -330,11 +330,17 @@ struct Conn;
 /// Sends one message to the player `id` (a guest only has the host, 0):
 /// on a socket its length, then it; over the relay each frame is a message.
 #[cfg(not(target_arch = "wasm32"))]
-fn send(stream: &mut Conn, _id: u8, m: &Msg) -> io::Result<()> {
+fn encode_frame(m: &Msg) -> Vec<u8> {
     let body = m.encode();
-    let mut frame = (body.len() as u32).to_le_bytes().to_vec();
+    let mut frame = Vec::with_capacity(4 + body.len());
+    frame.extend_from_slice(&(body.len() as u32).to_le_bytes());
     frame.extend(body);
-    stream.write_all(&frame)
+    frame
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn send(stream: &mut Conn, _id: u8, m: &Msg) -> io::Result<()> {
+    stream.write_all(&encode_frame(m))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -510,19 +516,35 @@ impl Session {
     }
 
     /// Sends to everyone but `except`. A TCP connection that fails is dropped; over the
-    /// relay a send fails only while the page's socket is not open (still joining, or
-    /// gone, which the session hears as Lost), so the peer is kept.
+    /// relay a host sends one broadcast frame (`255` for every guest, or `0x80 | id` for
+    /// every guest except `id`) so the relay fans it out instead of the host uploading N
+    /// copies.
     fn broadcast(&mut self, m: &Msg, except: Option<u8>) {
-        let mut gone = Vec::new();
-        for (id, s) in &mut self.peers {
-            if Some(*id) != except && send(s, *id, m).is_err() {
-                gone.push(*id);
-            }
+        if !self.peers.iter().any(|(id, _)| Some(*id) != except) {
+            return;
         }
         #[cfg(not(target_arch = "wasm32"))]
-        self.peers.retain(|(id, _)| !gone.contains(id));
+        {
+            let frame = encode_frame(m);
+            let mut gone = Vec::new();
+            for (id, s) in &mut self.peers {
+                if Some(*id) != except && s.write_all(&frame).is_err() {
+                    gone.push(*id);
+                }
+            }
+            self.peers.retain(|(id, _)| !gone.contains(id));
+        }
         #[cfg(target_arch = "wasm32")]
-        let _ = gone;
+        {
+            let target = if !self.host {
+                0
+            } else if let Some(from) = except {
+                0x80 | from
+            } else {
+                255
+            };
+            let _ = web::send_bytes(target, &m.encode());
+        }
     }
 
     /// What this player does: to the host, or from the host to everyone.

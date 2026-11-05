@@ -1162,7 +1162,7 @@
     }
 
     // Development only: `?game=http://localhost:8081` loads the files from a
-    // local server (see tools/serve_game.py) instead of the folder picker.
+    // local server (see crates/mm2-tools/src/serve.rs) instead of the folder picker.
     async function devLoad(wasm, base) {
       const paths = await (await fetch(base + "/manifest.json")).json();
       let done = 0;

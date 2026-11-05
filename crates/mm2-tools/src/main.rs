@@ -4,6 +4,7 @@ use mm2_formats::{dtm, faoe, rs2, slb, tga, trn, Container};
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
+mod serve;
 mod terrain;
 mod textures;
 
@@ -18,7 +19,8 @@ usage:
   mm2-tools dialog <UI/X.DAT> [out.png]  show a front-end dialog's controls, and draw it
   mm2-tools strings <X.DLL>           list a DLL's string table (UILANG.DLL, LANG.DLL)
   mm2-tools overlay <file.tga> <out.png>  convert an overlay picture from RES/GLOBAL.RES
-  mm2-tools textures <GAME-dir> <out-dir>  export every texture as PNG for upscaling";
+  mm2-tools textures <GAME-dir> <out-dir>  export every texture as PNG for upscaling
+  mm2-tools serve <GAME-dir> [--port 8081] [--with <dir>] [--page <dist>]  serve install to browser";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -34,6 +36,7 @@ fn main() -> ExitCode {
         ["strings", file] => strings(file),
         ["overlay", file, out] => overlay(file, out),
         ["dialog", file, out] => dialog(file, Some(out)),
+        ["serve", ..] => serve::run(&args[1..]),
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::from(2);

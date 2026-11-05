@@ -8,7 +8,7 @@ network play does.
 
 ```
  your browser ──WebSocket──┐
-                           ├── relay (tools/relay/relay.py) ──┐
+                           ├── relay (tools/relay, mm2-relay) ──┐
  a friend's browser ───────┘                                  └─ passes packets, never game files
 ```
 
@@ -39,15 +39,14 @@ host, and the host passes on what each sends. The relay stands in for the local 
 
 ## Setting it up
 
-The relay is a single Python file, `tools/relay/relay.py`, that needs the `websockets` package. It
+The relay is a small Rust server (`mm2-relay` in `tools/relay`) built with `tokio` and `tokio-tungstenite`. It
 keeps rooms in memory, stores nothing and has no accounts. You need to run one for the people
 you want to play with.
 
 ### Try it on one machine
 
 ```sh
-pip install -r tools/relay/requirements.txt
-python tools/relay/relay.py            # listens on 127.0.0.1:2108
+cargo run --release --bin mm2-relay    # listens on 127.0.0.1:2108
 
 cd crates/mm2-viewer
 trunk serve --port 8080                # the page, at http://127.0.0.1:8080
@@ -68,7 +67,7 @@ Put the relay where everyone can reach it and give it HTTPS, because a page serv
    docker compose up -d --build
    ```
 
-   or without it: `python tools/relay/relay.py --host 127.0.0.1 --port 2108`.
+   or without it: `cargo run --release --bin mm2-relay -- --host 127.0.0.1 --port 2108`.
 
 2. **Add HTTPS with a reverse proxy** that forwards WebSocket traffic to port 2108.
    Any reverse proxy or proxy manager (Caddy, Nginx, Apache, Traefik, HAProxy, NPM, etc.)
@@ -128,7 +127,7 @@ Put the relay where everyone can reach it and give it HTTPS, because a page serv
 | `PARK_SECONDS` | relay environment | `300` (how long a room nobody entered is kept) |
 
 The relay also limits rooms and connections per address and the rate of packets, so an open
-relay cannot be used up easily; the numbers are in `Limits` in `relay.py`.
+relay cannot be used up easily; the numbers are in `Limits` in `tools/relay/src/lib.rs`.
 
 ## What the relay sees
 
@@ -146,7 +145,7 @@ Anyone who knows a room's code can join it, so a private room is as private as i
 - **The relay refuses the connection ("origin not allowed"):** add the page's origin to
   `ALLOWED_ORIGINS`.
 - **Relay crashes with `MultipleValuesError` on `X-Forwarded-For`:** Occurs if an upstream proxy
-  passes multiple `X-Forwarded-For` header lines. Handled in `relay.py` by aggregating all forwarded
+  passes multiple `X-Forwarded-For` header lines. Handled in `mm2-relay` by aggregating all forwarded
   header lines.
 - **502 Bad Gateway on `/mp/stats`:** Check that the proxy's `Connection` header is dynamic
   (`$connection_upgrade`) rather than statically set to `"upgrade"` on non-WebSocket HTTP requests.
@@ -160,11 +159,11 @@ Anyone who knows a room's code can join it, so a private room is as private as i
 
 | Part | Where |
 | --- | --- |
-| Relay: rooms, codes, listing, limits | `tools/relay/relay.py` (tests in `tools/relay/tests`) |
+| Relay: rooms, codes, listing, limits | `tools/relay` (`mm2-relay`, tests in `tools/relay/src/lib.rs`) |
 | Page: the Multiplayer tab and the relay connection | `crates/mm2-viewer/mp.js`, `index.html` |
 | Engine: network session over the relay, lobby and race start | `crates/mm2-viewer/src/net.rs` (`mod web`), `screens/multi.rs`, `frontend.rs` |
 
 The session logic (host, guests, lobby, whole-bike packets) is the engine's own network code.
 In the browser it runs over the relay instead of TCP and UDP: `net.rs` has a `wasm32` transport
-that calls the `mm2Net*` functions `mp.js` defines. `tools/relay/relay.py` documents the relay's
+that calls the `mm2Net*` functions `mp.js` defines. `tools/relay/src/lib.rs` documents the relay's
 messages at the top of the file.

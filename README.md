@@ -55,7 +55,7 @@ PlayStation gamepads work too.
 ## Multiplayer
 
 This branch adds the game's network mode to the browser. A browser cannot listen for connections,
-so players meet through a small **relay server** (`tools/relay/relay.py`, one Python file). It
+so players meet through a small **relay server** (`tools/relay`, a lightweight Rust binary `mm2-relay`). It
 passes the game's network packets between them and never sees game files, which stay in each
 player's browser. Everyone brings their own copy of the game, the same version.
 
@@ -72,8 +72,7 @@ What you can do, from the **Multiplayer** tab under the folder card:
 **Setting it up.** You need a relay for the people you want to play with.
 
 ```sh
-pip install -r tools/relay/requirements.txt
-python tools/relay/relay.py            # 127.0.0.1:2108
+cargo run --release --bin mm2-relay    # 127.0.0.1:2108
 cd crates/mm2-viewer && trunk serve --port 8080
 ```
 
@@ -134,12 +133,12 @@ trunk serve --port 8080        # development server at http://127.0.0.1:8080
 trunk build --release          # optimised static files in dist/
 ```
 
-To try multiplayer while developing, also run the relay (`python tools/relay/relay.py`; its tests
-run with `python -m unittest discover -s tools/relay/tests`). To skip the folder picker while
+To try multiplayer while developing, also run the relay (`cargo run --release --bin mm2-relay`; its tests
+run with `cargo test --release -p mm2-relay`). To skip the folder picker while
 developing, serve your install locally and open the page with `?game=`:
 
 ```sh
-python tools/serve_game.py "/path/to/Motocross Madness 2" --port 8081
+cargo run --release --bin serve-game -- "/path/to/Motocross Madness 2" --port 8081
 # then open http://127.0.0.1:8080/?game=http://127.0.0.1:8081
 ```
 
