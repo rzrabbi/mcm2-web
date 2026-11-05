@@ -14,7 +14,25 @@ services:
       ALLOWED_ORIGINS: ""
       # How long a room nobody has entered is kept, in seconds.
       PARK_SECONDS: "300"
+      # Optional bearer/query token required to view /metrics, /metrics.json, and /dashboard
+      # when exposed through a reverse proxy. Leave empty for open localhost access.
+      METRICS_TOKEN: ""
     ports:
-      # Localhost only: the reverse proxy reaches it. Use "2108:2108" for a quick test on a trusted
-      # network with no proxy.
+      # Localhost only: the reverse proxy reaches it, and http://127.0.0.1:2108/dashboard opens the
+      # telemetry GUI locally (or via `ssh -L 2108:127.0.0.1:2108`). Use "2108:2108" for a quick
+      # test on a trusted network with no proxy.
       - "127.0.0.1:2108:2108"
+    healthcheck:
+      test: ["CMD", "mm2-relay", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    # Rotate and cap container stdout/stderr JSON logs so connection churn or flood logs
+    # can never fill up the VPS disk (capped at 3 x 10 MB = 30 MB max).
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"

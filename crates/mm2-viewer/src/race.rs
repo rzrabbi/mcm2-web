@@ -1832,6 +1832,7 @@ impl Race {
             for (i, r) in self.racers.iter_mut().enumerate() {
                 let computer = i != self.player || self.autopilot;
                 let ai = matches!(r.bike, Bike::Computer(_));
+                let taped = matches!(r.bike, Bike::Taped(_));
                 // A crashed computer rider is on the full model, which
                 // steps in whole 0.02 s steps like the player's, each
                 // frame.
@@ -1845,7 +1846,7 @@ impl Race {
                 };
                 // The controller tries its trick before the model steps
                 // (0x414000 → 0x415170), on the frame's starting state.
-                let pick = if i != self.player && first && racing && ai_dt > 0.0 {
+                let pick = if ai && first && racing && ai_dt > 0.0 {
                     r.ai_trick(ground, self.level, self.stunt_event, &mut self.seed, ai_dt)
                 } else {
                     None
@@ -1874,6 +1875,7 @@ impl Race {
                     );
                 }
                 let mut c = match (&self.course, computer) {
+                    _ if taped => Controls::default(),
                     _ if ai => match &r.bike {
                         Bike::Computer(b) => Controls {
                             throttle: b.rider.gas as u8 as f32,
@@ -1915,7 +1917,7 @@ impl Race {
                     }
                     r.taunting(&places, i, self.actions[1], step);
                     s
-                } else if racing {
+                } else if racing && !taped {
                     // The controller runs once a frame.
                     r.tricks(c, [false; 2], &self.tricks, step, pick)
                 } else {

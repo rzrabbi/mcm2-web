@@ -2560,7 +2560,7 @@ fn owned(n: frontend::NetRace, i: usize) -> bool {
 }
 
 /// A network race's traffic each frame: the other machines' bikes in, and
-/// ours out twenty times a second, as the game's whole-bike packets.
+/// ours out at [`replay::NET_SEND`], as the game's whole-bike packets.
 fn net_race(
     n: frontend::NetRace,
     race: &mut Race,
@@ -2587,6 +2587,14 @@ fn net_race(
             data,
         } = h
         {
+            if !n.host
+                && racer == 0
+                && !race.gate_down()
+                && time < race.lead
+                && (time - race.time).abs() > 0.05
+            {
+                race.time = time;
+            }
             let i = racer as usize;
             if let (Some(st), Some(rm), false) = (
                 mm2_formats::vcr::State::full(&data),
@@ -2597,8 +2605,8 @@ fn net_race(
             }
         }
     }
-    let at = race.time - replay::NET_DELAY;
-    for (i, rm) in remote.iter().enumerate() {
+    let at = race.time;
+    for (i, rm) in remote.iter_mut().enumerate() {
         if owned(n, i) {
             continue;
         }
@@ -2618,7 +2626,10 @@ fn net_race(
     if *wait > 0.0 {
         return chat;
     }
-    *wait = replay::NET_SEND;
+    *wait += replay::NET_SEND;
+    if *wait < 0.0 {
+        *wait = replay::NET_SEND;
+    }
     let order = race.standings();
     let clock = (race.time * 1000.0) as u32;
     let msgs: Vec<net::Msg> = (0..race.racers.len())
@@ -3839,6 +3850,7 @@ impl App {
                 self.race = make_race_as(&track, laps, setup.net.map_or(PLAYER, |n| n.me));
                 self.replay = self.tape.take();
                 self.remote.clear();
+                self.send_wait = 0.0;
                 if let (Some(n), Some(r)) = (self.net, &mut self.race) {
                     self.remote = (0..r.racers.len())
                         .map(|_| replay::Remote::default())
@@ -4735,16 +4747,6 @@ impl App {
                     [false; 2]
                 };
                 let (eye, target) = r.update(&track.ground(), controls, dt);
-                if let Some(renderer) = &mut state.renderer {
-                    throw_dirt(r, &track.ground(), &mut renderer.particles, dt);
-                    renderer.tyres(&tyre_places(r, &track.ground()), dt);
-                }
-                if let Some(rec) = &mut self.recording {
-                    rec.tick(r, dt);
-                }
-                if let Some(log) = &mut self.ride_log {
-                    log_ride(log, r, &acts, dt);
-                }
                 if let Some(g) = &mut self.ghost {
                     g.tick(r, &track.terrain, dt);
                 }
@@ -4764,6 +4766,16 @@ impl App {
                             hud.say(&line);
                         }
                     }
+                }
+                if let Some(renderer) = &mut state.renderer {
+                    throw_dirt(r, &track.ground(), &mut renderer.particles, dt);
+                    renderer.tyres(&tyre_places(r, &track.ground()), dt);
+                }
+                if let Some(rec) = &mut self.recording {
+                    rec.tick(r, dt);
+                }
+                if let Some(log) = &mut self.ride_log {
+                    log_ride(log, r, &acts, dt);
                 }
                 if let Some(sounds) = &mut self.sounds {
                     let l = listener(r, eye, target);

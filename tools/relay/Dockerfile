@@ -9,4 +9,6 @@ WORKDIR /app
 ENV HOST=0.0.0.0
 COPY --from=build /src/target/release/mm2-relay /usr/local/bin/mm2-relay
 EXPOSE 2108
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD ["mm2-relay", "--healthcheck"]
 CMD ["mm2-relay", "--port", "2108"]

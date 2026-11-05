@@ -126,13 +126,83 @@ Put the relay where everyone can reach it and give it HTTPS, because a page serv
 
 | What | Where | Default |
 | --- | --- | --- |
-| `--host`, `--port` | relay command line (or `HOST` in the environment) | `127.0.0.1`, `2108` |
+| `--host`, `--port` | relay command line (or `HOST`, `PORT` in the environment) | `127.0.0.1`, `2108` |
+| `--healthcheck` | relay command line (probes local `/health` and exits `0`/`1`) | off |
 | `TRUST_PROXY=1` | relay environment | off |
 | `ALLOWED_ORIGINS` | relay environment, comma separated | this host and localhost only |
 | `PARK_SECONDS` | relay environment | `300` (how long a room nobody entered is kept) |
+| `METRICS_TOKEN` | relay environment (optional Bearer or `?token=` secret for `/metrics` and `/dashboard`) | empty (open on localhost) |
 
 The relay also limits rooms and connections per address and the rate of packets, so an open
 relay cannot be used up easily; the numbers are in `Limits` in `tools/relay/src/lib.rs`.
+
+## Telemetry, Health Checks & Logging
+
+`mm2-relay` includes built-in application telemetry, a self-contained localhost GUI dashboard,
+Prometheus metrics, standard health check endpoints for monitoring tools and Docker, and human-readable live
+event logs.
+
+### Localhost Telemetry Dashboard (`/dashboard`)
+
+Open **`http://127.0.0.1:2108/dashboard`** (also aliased at `/status`, `/telemetry`, and under `/mp/...`)
+in a browser to view the live telemetry GUI:
+
+- **Active gauges & capacity bars:** open rooms (public vs. private), parked & abandoned rooms,
+  active players (hosts + guests), open WebSocket connections, unique client IPs, peak watermarks,
+  and process RSS memory.
+- **Live throughput & bottleneck tracking:** real-time packet rate (`fps` in/out) and bandwidth
+  (`KB/s` in/out), cumulative frames by routing mode (`guest_to_host`, `host_unicast`,
+  `host_broadcast_all`, `host_broadcast_except`), and slow-client dropped frames
+  (`frames_dropped_slow_client`) when a stalled socket fills its 512-frame outbound queue.
+- **Rejections & error breakdown:** counters for every rejection reason (`origin_forbidden`,
+  `conn_limit_global`, `conn_limit_ip`, `room_limit_global`, `room_limit_ip`, `rate_limit_cut`,
+  `idle_timeout`, `bad_join_rate`, `no_room`, `not_open`, `room_full`, `bad_request`,
+  `ws_bad_handshake`, `ws_bad_path`).
+- **Active rooms table & live event log:** per-room player slots, age, frame/byte counts, and a
+  filterable stream of the latest 150 relay events.
+
+If your relay runs on a remote VPS bound to `127.0.0.1:2108`, you can view the dashboard on your
+local machine anytime via an SSH port forward without exposing it publicly:
+
+```sh
+ssh -L 2108:127.0.0.1:2108 user@your-vps
+# Then open http://localhost:2108/dashboard
+```
+
+If you expose `/mp/dashboard` or `/mp/metrics` through a reverse proxy, set `METRICS_TOKEN` in
+`tools/relay/compose.yaml` and pass `?token=<your-token>` (or `Authorization: Bearer <your-token>`).
+
+### Endpoints Reference
+
+| Endpoint (also under `/mp/...`) | Format | Purpose |
+| --- | --- | --- |
+| `/dashboard` (`/status`, `/telemetry`) | `text/html` | Self-contained live telemetry GUI |
+| `/metrics` | `text/plain; version=0.0.4` | Prometheus / OpenMetrics scrape endpoint |
+| `/metrics.json` (`/metrics?format=json`) | `application/json` | Full JSON telemetry snapshot (gauges, counters, rooms, recent events) |
+| `/health` (`GET` or `HEAD`) | `text/plain` (`ok`) | Lightweight liveness check for monitoring services and load balancers |
+| `/health.json` (`/health?format=json`) | `application/json` | Structured health & capacity JSON for API/JSON monitors |
+| `/stats` | `application/json` | Public/total room and player counts for the game's start page |
+| `/rooms` | `application/json` | Public open room listing for the server browser |
+
+### Health Checks & Uptime Monitoring
+
+- **HTTP(S) / Keyword Monitors:** Point your monitoring service at `https://relay.example.com/mp/health`
+  (or `http://127.0.0.1:2108/health`). Expects `200 OK` and body `ok` (`HEAD` requests are also supported).
+- **JSON Query / API Monitors:** Point at `https://relay.example.com/mp/health.json` to inspect structured
+  relay health (`status: "ok"`, `healthy: true`, active room and connection limits).
+- **Docker Native `HEALTHCHECK`:** Both `tools/relay/Dockerfile` and `tools/relay/compose.yaml`
+  configure `["mm2-relay", "--healthcheck"]`, which probes local `/health` without needing external utilities like `curl` or
+  `wget` installed inside the container.
+
+### Live Logs & Docker Disk Protection
+
+`mm2-relay` writes structured, human-readable event lines to `stdout` (`docker compose logs -f`)
+with UTC ISO-8601 timestamps, severity (`INFO` / `WARN`), component tags (`[startup]`, `[conn #N]`,
+`[room CODE]`, `[reject]`, `[join]`, `[resume]`, `[host]`), client IPs, and frame/byte counters.
+
+To prevent container logs from growing unboundedly and filling VPS disks during connection churn or
+floods, `tools/relay/compose.yaml` configures Docker's `json-file` log rotation (`max-size: "10m"`,
+`max-file: "3"`, `compress: "true"`), capping total relay logs on disk at 30 MB.
 
 ## What the relay sees
 

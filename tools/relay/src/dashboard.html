@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mm2-relay · Telemetry &amp; Diagnostics</title>
+<style>
+  :root {
+    --bg: #0f1216;
+    --panel: #161b22;
+    --panel-alt: #1c222b;
+    --border: #2a323e;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --ok: #3fb950;
+    --ok-bg: rgba(63, 185, 80, 0.14);
+    --warn: #d29922;
+    --warn-bg: rgba(210, 153, 34, 0.16);
+    --err: #f85149;
+    --err-bg: rgba(248, 81, 73, 0.16);
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 18px 22px 32px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 1400px; margin: 0 auto; }
+
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding-bottom: 14px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .brand h1 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    font-family: var(--mono);
+    letter-spacing: -0.2px;
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .badge.ok { background: var(--ok-bg); color: var(--ok); border: 1px solid rgba(63, 185, 80, 0.35); }
+  .badge.warn { background: var(--warn-bg); color: var(--warn); border: 1px solid rgba(210, 153, 34, 0.35); }
+  .badge.err { background: var(--err-bg); color: var(--err); border: 1px solid rgba(248, 81, 73, 0.35); }
+  .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  .meta-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 14px;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .meta-bar strong { color: var(--text); font-weight: 500; }
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  select, button, input[type="search"] {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  button { cursor: pointer; }
+  button:hover, select:hover { border-color: var(--muted); }
+
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+  }
+  .card.alert-warn { border-color: var(--warn); }
+  .card.alert-err { border-color: var(--err); }
+  .card-label {
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 4px;
+  }
+  .card-val {
+    font-family: var(--mono);
+    font-size: 24px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    margin-bottom: 6px;
+  }
+  .card-sub {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .bar-track {
+    width: 100%;
+    height: 4px;
+    background: var(--panel-alt);
+    border-radius: 2px;
+    overflow: hidden;
+    margin: 6px 0;
+  }
+  .bar-fill {
+    height: 100%;
+    background: var(--accent);
+    width: 0%;
+    transition: width 0.2s ease;
+  }
+  .bar-fill.warn { background: var(--warn); }
+  .bar-fill.err { background: var(--err); }
+
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  @media (max-width: 960px) {
+    .two-col { grid-template-columns: 1fr; }
+  }
+
+  .section-hdr {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  .section-hdr h2 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text);
+  }
+  .section-hdr .hint {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  th, td {
+    padding: 5px 8px;
+    text-align: left;
+    border-bottom: 1px solid rgba(42, 50, 62, 0.65);
+  }
+  th {
+    color: var(--muted);
+    font-weight: 500;
+    font-size: 11px;
+    text-transform: uppercase;
+    background: var(--panel-alt);
+  }
+  td.num, th.num { text-align: right; }
+  tr:last-child td { border-bottom: none; }
+  tr.nonzero-warn td { color: var(--warn); background: rgba(210, 153, 34, 0.06); }
+  tr.nonzero-err td { color: var(--err); background: rgba(248, 81, 73, 0.07); }
+
+  .pill {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .pill.open { background: var(--ok-bg); color: var(--ok); }
+  .pill.parked { background: var(--warn-bg); color: var(--warn); }
+  .pill.abandoned { background: var(--err-bg); color: var(--err); }
+  .pill.pub { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
+  .pill.priv { background: var(--panel-alt); color: var(--muted); }
+
+  .log-box {
+    max-height: 340px;
+    overflow-y: auto;
+    background: #0b0e12;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 10px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.55;
+  }
+  .log-line {
+    white-space: pre-wrap;
+    word-break: break-word;
+    padding: 2px 0;
+    border-bottom: 1px solid rgba(42, 50, 62, 0.3);
+  }
+  .log-line:last-child { border-bottom: none; }
+  .log-ts { color: var(--muted); }
+  .log-lvl-INFO { color: var(--ok); font-weight: 600; }
+  .log-lvl-WARN { color: var(--warn); font-weight: 600; }
+  .log-lvl-ERROR { color: var(--err); font-weight: 600; }
+  .log-tag { color: var(--accent); }
+  .empty-row { color: var(--muted); text-align: center; padding: 14px !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <h1>mm2-relay // telemetry</h1>
+      <span id="status-badge" class="badge ok"><span class="dot"></span><span id="status-text">CONNECTING</span></span>
+    </div>
+    <div class="meta-bar">
+      <span>v<strong id="m-ver">0.2.1</strong></span>
+      <span>Uptime: <strong id="m-uptime">--</strong></span>
+      <span>RSS: <strong id="m-rss">--</strong></span>
+      <span>Proxy: <strong id="m-proxy">--</strong></span>
+      <span>Endpoints:
+        <a id="lnk-prom" href="metrics" target="_blank">/metrics</a> ·
+        <a id="lnk-json" href="metrics.json" target="_blank">/metrics.json</a> ·
+        <a id="lnk-health" href="health.json" target="_blank">/health.json</a> ·
+        <a id="lnk-rooms" href="rooms" target="_blank">/rooms</a>
+      </span>
+    </div>
+    <div class="controls">
+      <label for="poll-rate" style="color:var(--muted);font-family:var(--mono);font-size:11px;">Poll:</label>
+      <select id="poll-rate">
+        <option value="1000">1s</option>
+        <option value="2000" selected>2s</option>
+        <option value="5000">5s</option>
+        <option value="10000">10s</option>
+        <option value="0">Paused</option>
+      </select>
+      <button id="btn-refresh" type="button">Refresh</button>
+    </div>
+  </header>
+
+  <section class="kpi-grid">
+    <div class="card" id="card-rooms">
+      <div class="card-label"><span>Active Rooms (Open)</span><span id="rooms-cap-lbl">0 / 500</span></div>
+      <div class="card-val" id="k-rooms-open">0</div>
+      <div class="bar-track"><div class="bar-fill" id="bar-rooms"></div></div>
+      <div class="card-sub">
+        <span>Pub: <strong id="k-rooms-pub">0</strong></span>
+        <span>Priv: <strong id="k-rooms-priv">0</strong></span>
+        <span>Parked: <strong id="k-rooms-parked">0</strong></span>
+        <span>Peak: <strong id="k-rooms-peak">0</strong></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-label"><span>Active Players</span><span id="players-pub-lbl">Public: 0</span></div>
+      <div class="card-val" id="k-players-active">0</div>
+      <div class="bar-track"><div class="bar-fill" id="bar-players"></div></div>
+      <div class="card-sub">
+        <span>Hosts: <strong id="k-hosts">0</strong></span>
+        <span>Guests: <strong id="k-guests">0</strong></span>
+        <span>Peak: <strong id="k-players-peak">0</strong></span>
+      </div>
+    </div>
+
+    <div class="card" id="card-conns">
+      <div class="card-label"><span>WebSocket Connections</span><span id="conns-cap-lbl">0 / 2000</span></div>
+      <div class="card-val" id="k-conns">0</div>
+      <div class="bar-track"><div class="bar-fill" id="bar-conns"></div></div>
+      <div class="card-sub">
+        <span>Unique IPs: <strong id="k-ips">0</strong></span>
+        <span>Per-IP cap: <strong id="k-ip-cap">8</strong></span>
+        <span>Peak: <strong id="k-conns-peak">0</strong></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-label"><span>Live Packet Rate</span><span id="k-bw-rate">0.0 KB/s in · 0.0 KB/s out</span></div>
+      <div class="card-val" id="k-fps-rate">0 / 0 fps</div>
+      <div class="card-sub">
+        <span>Total In: <strong id="k-frames-in">0</strong> (<span id="k-bytes-in">0 B</span>)</span>
+        <span>Total Out: <strong id="k-frames-out">0</strong> (<span id="k-bytes-out">0 B</span>)</span>
+      </div>
+    </div>
+
+    <div class="card" id="card-bottleneck">
+      <div class="card-label"><span>Bottlenecks &amp; Drops</span><span id="k-queue-cap">Queue cap: 512</span></div>
+      <div class="card-val" id="k-dropped">0</div>
+      <div class="card-sub">
+        <span>Rate cuts: <strong id="k-rate-cuts">0</strong></span>
+        <span>Idle cuts: <strong id="k-idle-cuts">0</strong></span>
+        <span>Tracked bad IPs: <strong id="k-bad-ips">0</strong></span>
+      </div>
+    </div>
+  </section>
+
+  <div class="two-col">
+    <div class="card">
+      <div class="section-hdr">
+        <h2>Traffic, Lifecycle &amp; Limits</h2>
+        <span class="hint">Cumulative totals since startup</span>
+      </div>
+      <table>
+        <thead>
+          <tr><th>Metric</th><th class="num">Value</th><th>Metric</th><th class="num">Value</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Frames: Guest &rarr; Host</td><td class="num" id="t-g2h">0</td>
+            <td>TCP Conns Accepted</td><td class="num" id="t-tcp">0</td>
+          </tr>
+          <tr>
+            <td>Frames: Host Unicast</td><td class="num" id="t-h-uni">0</td>
+            <td>WS Upgrades</td><td class="num" id="t-ws-up">0</td>
+          </tr>
+          <tr>
+            <td>Frames: Broadcast All (255)</td><td class="num" id="t-h-all">0</td>
+            <td>WS Disconnects</td><td class="num" id="t-ws-disc">0</td>
+          </tr>
+          <tr>
+            <td>Frames: Broadcast Except</td><td class="num" id="t-h-exc">0</td>
+            <td>Rooms Created / Joined</td><td class="num" id="t-rm-cj">0 / 0</td>
+          </tr>
+          <tr>
+            <td>Slow-Client Dropped Frames</td><td class="num" id="t-drop">0</td>
+            <td>Rooms Resumed / Entered</td><td class="num" id="t-rm-re">0 / 0</td>
+          </tr>
+          <tr>
+            <td>Control JSON Messages</td><td class="num" id="t-ctrl">0</td>
+            <td>Rooms Parked / Closed</td><td class="num" id="t-rm-pc">0 / 0</td>
+          </tr>
+          <tr>
+            <td>HTTP /stats &amp; /rooms</td><td class="num" id="t-http-sr">0 / 0</td>
+            <td>Rooms Expired / Evicted</td><td class="num" id="t-rm-ee">0 / 0</td>
+          </tr>
+          <tr>
+            <td>HTTP /health &amp; /metrics</td><td class="num" id="t-http-hm">0 / 0</td>
+            <td>Sweep Runs (TTL <span id="t-ttl">300</span>s)</td><td class="num" id="t-sweeps">0</td>
+          </tr>
+          <tr>
+            <td>Host Rate Limit</td><td class="num" id="t-lim-host">--</td>
+            <td>Guest Rate Limit</td><td class="num" id="t-lim-guest">--</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="section-hdr">
+        <h2>Rejections, Rate-Limits &amp; Errors</h2>
+        <span class="hint">Non-zero counters highlight potential issues</span>
+      </div>
+      <table>
+        <thead>
+          <tr><th>Reason Code</th><th>Description</th><th class="num">Count</th></tr>
+        </thead>
+        <tbody id="rejections-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom: 16px;">
+    <div class="section-hdr">
+      <h2>Active &amp; Parked Rooms (<span id="rooms-table-count">0</span>)</h2>
+      <span class="hint">Live room state, player slots, and per-room packet counters</span>
+    </div>
+    <div style="overflow-x:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>Code</th>
+            <th>Name</th>
+            <th>Visibility</th>
+            <th>State</th>
+            <th>Players</th>
+            <th>Info / Track</th>
+            <th class="num">Age</th>
+            <th class="num">Frames (In / Out)</th>
+            <th class="num">Bytes (In / Out)</th>
+            <th class="num">Dropped</th>
+          </tr>
+        </thead>
+        <tbody id="rooms-body">
+          <tr><td colspan="10" class="empty-row">No active or parked rooms</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="section-hdr">
+      <h2>Live Relay Event Log (<span id="events-count">0</span>)</h2>
+      <div class="controls">
+        <select id="log-level-filter">
+          <option value="ALL">All levels</option>
+          <option value="WARN">WARN only</option>
+        </select>
+        <input type="search" id="log-search" placeholder="Filter by room, IP, conn #..." style="width:210px;">
+      </div>
+    </div>
+    <div class="log-box" id="log-box">
+      <div class="empty-row">Waiting for telemetry...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  const base = location.pathname.replace(/\/(dashboard|status|telemetry)\/?$/, '');
+  const qs = location.search || '';
+  document.getElementById('lnk-prom').href = base + '/metrics' + qs;
+  document.getElementById('lnk-json').href = base + '/metrics.json' + qs;
+  document.getElementById('lnk-health').href = base + '/health.json' + qs;
+  document.getElementById('lnk-rooms').href = base + '/rooms' + qs;
+
+  const REJECTION_META = [
+    ['origin_forbidden', '403 Forbidden: Origin not in ALLOWED_ORIGINS', 'err'],
+    ['conn_limit_global', '1013 Busy: Global connection limit reached', 'err'],
+    ['conn_limit_ip', '1013 Busy: Per-IP connection limit reached', 'warn'],
+    ['room_limit_global', 'Busy: Global room limit reached', 'err'],
+    ['room_limit_ip', 'Busy: Per-IP room limit reached', 'warn'],
+    ['rate_limit_cut', '1008 Policy: Client exceeded packet/byte rate bucket', 'warn'],
+    ['idle_timeout', '1008 Policy: No room command within first_message_seconds', 'warn'],
+    ['bad_join_rate', 'Rate: Too many failed join/resume attempts per minute', 'warn'],
+    ['no_room', 'Join/Resume: Room code not found or invalid resume token', 'warn'],
+    ['not_open', 'Join: Room is currently parked (host not in lobby)', 'warn'],
+    ['room_full', 'Join: Room is full (8/8 players)', 'warn'],
+    ['bad_request', 'Control: Malformed JSON or unknown command', 'warn'],
+    ['ws_bad_handshake', '400 Bad Request: Missing Sec-WebSocket-Key', 'warn'],
+    ['ws_bad_path', '404 Not Found: WebSocket upgrade on invalid path', 'warn']
+  ];
+
+  let prevSample = null;
+  let lastEvents = [];
+  let timer = null;
+
+  function fmtDuration(sec) {
+    sec = Math.max(0, Math.floor(sec || 0));
+    const d = Math.floor(sec / 86400);
+    const h = Math.floor((sec % 86400) / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    const pad = n => String(n).padStart(2, '0');
+    if (d > 0) return `${d}d ${pad(h)}h ${pad(m)}m ${pad(s)}s`;
+    if (h > 0) return `${pad(h)}h ${pad(m)}m ${pad(s)}s`;
+    return `${pad(m)}m ${pad(s)}s`;
+  }
+
+  function fmtBytes(b) {
+    b = Number(b || 0);
+    if (b < 1024) return `${b} B`;
+    if (b < 1048576) return `${(b / 1024).toFixed(1)} KB`;
+    if (b < 1073741824) return `${(b / 1048576).toFixed(2)} MB`;
+    return `${(b / 1073741824).toFixed(2)} GB`;
+  }
+
+  function fmtNum(n) {
+    return Number(n || 0).toLocaleString('en-US');
+  }
+
+  function esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+  }
+
+  function setBar(id, val, max) {
+    const el = document.getElementById(id);
+    const pct = max > 0 ? Math.min(100, (val / max) * 100) : 0;
+    el.style.width = pct.toFixed(1) + '%';
+    el.className = 'bar-fill' + (pct >= 90 ? ' err' : pct >= 70 ? ' warn' : '');
+  }
+
+  function renderLogs() {
+    const box = document.getElementById('log-box');
+    const lvlFilter = document.getElementById('log-level-filter').value;
+    const query = document.getElementById('log-search').value.trim().toLowerCase();
+    const filtered = lastEvents.filter(e => {
+      if (lvlFilter === 'WARN' && e.level === 'INFO') return false;
+      if (query) {
+        const hay = `${e.ts} ${e.level} ${e.tag} ${e.msg}`.toLowerCase();
+        if (!hay.includes(query)) return false;
+      }
+      return true;
+    });
+    document.getElementById('events-count').textContent = `${filtered.length} / ${lastEvents.length}`;
+    if (filtered.length === 0) {
+      box.innerHTML = '<div class="empty-row">No matching log events</div>';
+      return;
+    }
+    box.innerHTML = filtered.map(e =>
+      `<div class="log-line"><span class="log-ts">${esc(e.ts)}</span> <span class="log-lvl-${esc(e.level)}">${esc(e.level.padEnd(5))}</span> <span class="log-tag">[${esc(e.tag)}]</span> ${esc(e.msg)}</div>`
+    ).join('');
+  }
+
+  async function refresh() {
+    try {
+      const res = await fetch(base + '/metrics.json' + qs, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const d = await res.json();
+      const now = performance.now();
+
+      const badge = document.getElementById('status-badge');
+      const stText = document.getElementById('status-text');
+      if (d.saturated) {
+        badge.className = 'badge warn';
+        stText.textContent = 'SATURATED';
+      } else {
+        badge.className = 'badge ok';
+        stText.textContent = 'ONLINE · HEALTHY';
+      }
+
+      document.getElementById('m-ver').textContent = d.version || '0.2.1';
+      document.getElementById('m-uptime').textContent = fmtDuration(d.uptime_seconds);
+      document.getElementById('m-rss').textContent = d.memory_rss_bytes ? fmtBytes(d.memory_rss_bytes) : 'N/A';
+      document.getElementById('m-proxy').textContent = d.limits.trust_proxy
+        ? `TRUST_PROXY (${d.limits.allowed_origins_count} origins)`
+        : `direct (${d.limits.allowed_origins_count} origins)`;
+
+      const g = d.gauges;
+      const c = d.counters;
+      const lim = d.limits;
+      const pk = d.peaks;
+
+      document.getElementById('k-rooms-open').textContent = fmtNum(g.rooms_open);
+      document.getElementById('rooms-cap-lbl').textContent = `${g.rooms_total} / ${lim.rooms} total`;
+      document.getElementById('k-rooms-pub').textContent = fmtNum(g.rooms_public);
+      document.getElementById('k-rooms-priv').textContent = fmtNum(g.rooms_private);
+      document.getElementById('k-rooms-parked').textContent = `${g.rooms_parked} (${g.rooms_abandoned} aband.)`;
+      document.getElementById('k-rooms-peak').textContent = fmtNum(pk.rooms);
+      setBar('bar-rooms', g.rooms_total, lim.rooms);
+
+      document.getElementById('k-players-active').textContent = fmtNum(g.players_active);
+      document.getElementById('players-pub-lbl').textContent = `Public: ${fmtNum(g.players_public)}`;
+      document.getElementById('k-hosts').textContent = fmtNum(g.hosts_connected);
+      document.getElementById('k-guests').textContent = fmtNum(g.guests_connected);
+      document.getElementById('k-players-peak').textContent = fmtNum(pk.players);
+      setBar('bar-players', g.players_active, Math.max(8, g.rooms_open * 8));
+
+      document.getElementById('k-conns').textContent = fmtNum(g.connections_active);
+      document.getElementById('conns-cap-lbl').textContent = `${g.connections_active} / ${lim.connections}`;
+      document.getElementById('k-ips').textContent = fmtNum(g.unique_ips_active);
+      document.getElementById('k-ip-cap').textContent = lim.connections_per_ip;
+      document.getElementById('k-conns-peak').textContent = fmtNum(pk.connections);
+      setBar('bar-conns', g.connections_active, lim.connections);
+
+      if (prevSample && now > prevSample.ts) {
+        const dt = (now - prevSample.ts) / 1000;
+        const fpsIn = Math.max(0, (c.frames_in - prevSample.frames_in) / dt);
+        const fpsOut = Math.max(0, (c.frames_out - prevSample.frames_out) / dt);
+        const bpsIn = Math.max(0, (c.bytes_in - prevSample.bytes_in) / dt);
+        const bpsOut = Math.max(0, (c.bytes_out - prevSample.bytes_out) / dt);
+        document.getElementById('k-fps-rate').textContent = `${Math.round(fpsIn)} in / ${Math.round(fpsOut)} out fps`;
+        document.getElementById('k-bw-rate').textContent = `${fmtBytes(bpsIn)}/s in · ${fmtBytes(bpsOut)}/s out`;
+      }
+      prevSample = { ts: now, frames_in: c.frames_in, frames_out: c.frames_out, bytes_in: c.bytes_in, bytes_out: c.bytes_out };
+
+      document.getElementById('k-frames-in').textContent = fmtNum(c.frames_in);
+      document.getElementById('k-bytes-in').textContent = fmtBytes(c.bytes_in);
+      document.getElementById('k-frames-out').textContent = fmtNum(c.frames_out);
+      document.getElementById('k-bytes-out').textContent = fmtBytes(c.bytes_out);
+
+      const drops = c.frames_dropped_slow_client || 0;
+      const rateCuts = (d.rejections && d.rejections.rate_limit_cut) || 0;
+      const idleCuts = (d.rejections && d.rejections.idle_timeout) || 0;
+      document.getElementById('k-dropped').textContent = fmtNum(drops);
+      document.getElementById('k-rate-cuts').textContent = fmtNum(rateCuts);
+      document.getElementById('k-idle-cuts').textContent = fmtNum(idleCuts);
+      document.getElementById('k-bad-ips').textContent = fmtNum(g.rate_tracked_ips);
+      document.getElementById('k-queue-cap').textContent = `Queue cap: ${lim.max_queued_binary_frames}`;
+      const bCard = document.getElementById('card-bottleneck');
+      bCard.className = 'card' + (drops > 0 ? ' alert-warn' : '');
+
+      document.getElementById('t-g2h').textContent = fmtNum(c.frames_guest_to_host);
+      document.getElementById('t-h-uni').textContent = fmtNum(c.frames_host_unicast);
+      document.getElementById('t-h-all').textContent = fmtNum(c.frames_host_broadcast_all);
+      document.getElementById('t-h-exc').textContent = fmtNum(c.frames_host_broadcast_except);
+      document.getElementById('t-drop').textContent = fmtNum(drops);
+      document.getElementById('t-ctrl').textContent = fmtNum(c.control_messages);
+      document.getElementById('t-tcp').textContent = fmtNum(c.tcp_connections);
+      document.getElementById('t-ws-up').textContent = fmtNum(c.ws_upgrades);
+      document.getElementById('t-ws-disc').textContent = fmtNum(c.ws_disconnects);
+      document.getElementById('t-rm-cj').textContent = `${fmtNum(c.rooms_created)} / ${fmtNum(c.rooms_joined)}`;
+      document.getElementById('t-rm-re').textContent = `${fmtNum(c.rooms_resumed)} / ${fmtNum(c.rooms_entered)}`;
+      document.getElementById('t-rm-pc').textContent = `${fmtNum(c.rooms_parked)} / ${fmtNum(c.rooms_closed)}`;
+      document.getElementById('t-rm-ee').textContent = `${fmtNum(c.rooms_expired)} / ${fmtNum(c.rooms_evicted_per_ip)}`;
+      document.getElementById('t-http-sr').textContent = `${fmtNum(c.http_stats)} / ${fmtNum(c.http_rooms)}`;
+      document.getElementById('t-http-hm').textContent = `${fmtNum(c.http_health)} / ${fmtNum(c.http_metrics)}`;
+      document.getElementById('t-ttl').textContent = Math.round(lim.park_seconds);
+      document.getElementById('t-sweeps').textContent = fmtNum(c.sweeps);
+      document.getElementById('t-lim-host').textContent = `${lim.host_rate_fps} fps / ${fmtBytes(lim.host_bytes_per_sec)}/s`;
+      document.getElementById('t-lim-guest').textContent = `${lim.guest_rate_fps} fps / ${fmtBytes(lim.guest_bytes_per_sec)}/s`;
+
+      const rej = d.rejections || {};
+      document.getElementById('rejections-body').innerHTML = REJECTION_META.map(([key, desc, sev]) => {
+        const val = rej[key] || 0;
+        const rowCls = val > 0 ? `nonzero-${sev}` : '';
+        return `<tr class="${rowCls}"><td>${esc(key)}</td><td>${esc(desc)}</td><td class="num">${fmtNum(val)}</td></tr>`;
+      }).join('');
+
+      const rooms = d.active_rooms || [];
+      document.getElementById('rooms-table-count').textContent = rooms.length;
+      const rBody = document.getElementById('rooms-body');
+      if (rooms.length === 0) {
+        rBody.innerHTML = '<tr><td colspan="10" class="empty-row">No active or parked rooms</td></tr>';
+      } else {
+        rBody.innerHTML = rooms.map(r => {
+          const visPill = r.public ? '<span class="pill pub">public</span>' : '<span class="pill priv">private</span>';
+          const stPill = `<span class="pill ${esc(r.state)}">${esc(r.state)}</span>`;
+          const slots = r.guest_ids && r.guest_ids.length ? ` (guests: #${r.guest_ids.join(', #')})` : '';
+          const ageStr = r.state === 'open'
+            ? fmtDuration(r.age_seconds)
+            : `${fmtDuration(r.age_seconds)} (parked ${fmtDuration(r.parked_seconds)})`;
+          const dropCls = r.frames_dropped > 0 ? 'style="color:var(--warn);font-weight:600;"' : '';
+          return `<tr>
+            <td><strong>${esc(r.code)}</strong></td>
+            <td>${esc(r.name)}</td>
+            <td>${visPill}</td>
+            <td>${stPill}</td>
+            <td>${r.players} / ${r.max_players}${esc(slots)}</td>
+            <td>${esc(r.info || '—')}</td>
+            <td class="num">${ageStr}</td>
+            <td class="num">${fmtNum(r.frames_in)} / ${fmtNum(r.frames_out)}</td>
+            <td class="num">${fmtBytes(r.bytes_in)} / ${fmtBytes(r.bytes_out)}</td>
+            <td class="num" ${dropCls}>${fmtNum(r.frames_dropped)}</td>
+          </tr>`;
+        }).join('');
+      }
+
+      lastEvents = d.recent_events || [];
+      renderLogs();
+    } catch (err) {
+      const badge = document.getElementById('status-badge');
+      badge.className = 'badge err';
+      document.getElementById('status-text').textContent = 'UNREACHABLE';
+    }
+  }
+
+  function schedule() {
+    if (timer) clearInterval(timer);
+    const ms = Number(document.getElementById('poll-rate').value);
+    if (ms > 0) timer = setInterval(refresh, ms);
+  }
+
+  document.getElementById('poll-rate').addEventListener('change', schedule);
+  document.getElementById('btn-refresh').addEventListener('click', refresh);
+  document.getElementById('log-level-filter').addEventListener('change', renderLogs);
+  document.getElementById('log-search').addEventListener('input', renderLogs);
+
+  refresh();
+  schedule();
+})();
+</script>
+</body>
+</html>
+
