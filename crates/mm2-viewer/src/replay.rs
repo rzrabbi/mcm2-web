@@ -142,40 +142,146 @@ pub fn taped_like(b: &Bike) -> Bike {
 
 /// How far behind another machine's bikes are shown, so there is a packet
 /// either side to slide between, and how often ours go out.
-pub const NET_DELAY: f32 = 0.1;
-pub const NET_SEND: f32 = 1.0 / 20.0;
+pub const NET_DELAY: f32 = 0.05;
+pub const NET_SEND: f32 = 1.0 / 30.0;
 
-/// Another machine's bike: its last packets, by its race clock.
+/// Another machine's bike: its last packets, aligned from its race clock to
+/// ours with adaptive jitter buffering, rate-smoothed playback and Cubic
+/// Hermite interpolation so both localhost and jittery internet connections
+/// stay smooth.
 #[derive(Debug, Default)]
 pub struct Remote {
     states: std::collections::VecDeque<(f32, State)>,
+    offset: Option<f32>,
+    jitter: f32,
+    step: f32,
+    played: Option<f32>,
+    last_local: Option<f32>,
+    fresh: bool,
 }
 
 impl Remote {
     pub fn push(&mut self, time: f32, s: State) {
-        if self.states.back().is_some_and(|b| b.0 >= time) {
-            return;
+        if let Some(&(last, _)) = self.states.back() {
+            if time + 1.0 < last {
+                self.states.clear();
+                self.offset = None;
+                self.jitter = 0.0;
+                self.step = 0.0;
+                self.played = None;
+                self.last_local = None;
+            } else if time <= last {
+                return;
+            } else {
+                let dt = (time - last).clamp(0.005, 0.25);
+                self.step = if self.step <= 0.0 {
+                    dt
+                } else {
+                    self.step * 0.8 + dt * 0.2
+                };
+            }
         }
         self.states.push_back((time, s));
-        while self.states.len() > 40 {
+        self.fresh = true;
+        while self.states.len() > 60 {
             self.states.pop_front();
         }
     }
 
-    /// The bike at `time`: between the packets either side, or the last.
-    pub fn at(&self, time: f32) -> Option<State> {
+    /// The bike at our `local_time`: aligned to the sender's clock, interpolated
+    /// along a Cubic Hermite curve between the packets either side, or carried
+    /// on briefly by its velocity when a packet is late.
+    pub fn at(&mut self, local_time: f32) -> Option<State> {
+        let newest = self.states.back()?.0;
+        let frame_dt = self
+            .last_local
+            .map(|prev| (local_time - prev).clamp(0.0, 0.1))
+            .unwrap_or(0.0);
+        self.last_local = Some(local_time);
+
+        if self.fresh {
+            self.fresh = false;
+            let measured = newest - local_time;
+            match self.offset {
+                None => {
+                    self.offset = Some(measured);
+                }
+                Some(off) if (measured - off).abs() > 0.30 => {
+                    self.offset = Some(measured);
+                    self.jitter = 0.0;
+                    self.played = None;
+                }
+                Some(off) => {
+                    let err = measured - off;
+                    self.jitter =
+                        (self.jitter + (err.abs() - self.jitter) * 0.125).clamp(0.0, 0.08);
+                    let gain = if err > 0.0 { 0.15 } else { 0.04 };
+                    self.offset = Some(off + err * gain);
+                }
+            }
+        }
+        let step = if self.step > 0.0 { self.step } else { NET_SEND };
+        let delay = (step * 1.5 + self.jitter * 3.0).clamp(NET_DELAY, 0.18);
+        let target = local_time + self.offset.unwrap_or(newest - local_time) - delay;
+        let time = match self.played {
+            None => target,
+            Some(prev) if (target - (prev + frame_dt)).abs() > 0.25 => target,
+            Some(prev) => {
+                let drift = target - (prev + frame_dt);
+                let rate = (1.0 + drift * 3.0).clamp(0.88, 1.12);
+                (prev + frame_dt * rate).min(newest + 0.10)
+            }
+        };
+        self.played = Some(time);
+
         let i = self.states.partition_point(|s| s.0 <= time);
         match (
             i.checked_sub(1).and_then(|k| self.states.get(k)),
             self.states.get(i),
         ) {
             (Some(a), Some(b)) => {
-                let f = ((time - a.0) / (b.0 - a.0).max(1e-3)).clamp(0.0, 1.0);
-                Some(a.1.lerp(&b.1, f))
+                let dt = (b.0 - a.0).clamp(1e-3, 0.25);
+                let f = ((time - a.0) / dt).clamp(0.0, 1.0);
+                Some(hermite(&a.1, &b.1, dt, f))
             }
-            (a, b) => a.or(b).map(|s| s.1),
+            (Some(last), None) => {
+                let dt = (time - last.0).clamp(0.0, 0.10);
+                let eff = dt * (1.0 - dt * 3.0);
+                let mut s = last.1;
+                for k in 0..3 {
+                    s.position[k] += s.velocity[k] * eff;
+                }
+                Some(s)
+            }
+            (None, Some(first)) => Some(first.1),
+            (None, None) => None,
         }
     }
+}
+
+/// Cubic Hermite spline between `a` and `b` over `dt` seconds using both
+/// positions and velocities, falling back to linear/snap on a course reset.
+fn hermite(a: &State, b: &State, dt: f32, f: f32) -> State {
+    let mut s = a.lerp(b, f);
+    let dx = b.position[0] - a.position[0];
+    let dy = b.position[1] - a.position[1];
+    let dz = b.position[2] - a.position[2];
+    if dx * dx + dy * dy + dz * dz > 35.0 * 35.0 {
+        return if f < 0.5 { *a } else { *b };
+    }
+    let f2 = f * f;
+    let f3 = f2 * f;
+    let h00 = 2.0 * f3 - 3.0 * f2 + 1.0;
+    let h10 = f3 - 2.0 * f2 + f;
+    let h01 = -2.0 * f3 + 3.0 * f2;
+    let h11 = f3 - f2;
+    for k in 0..3 {
+        s.position[k] = h00 * a.position[k]
+            + h10 * (dt * a.velocity[k])
+            + h01 * b.position[k]
+            + h11 * (dt * b.velocity[k]);
+    }
+    s
 }
 
 /// How often a frame goes on the tape: the game writes one each frame it
@@ -754,5 +860,77 @@ mod tests {
     fn clock_text_is_the_games() {
         assert_eq!(clock_text(14.132), "00:00:14.13");
         assert_eq!(clock_text(3725.5), "01:02:05.50");
+    }
+
+    #[test]
+    fn remote_aligns_clock_offset_both_ways_and_interpolates() {
+        let state_at = |t: f32| State {
+            position: [t * 100.0, 0.0, 0.0],
+            velocity: [100.0, 0.0, 0.0],
+            ..State::default()
+        };
+        // Guest whose local race clock started 1.8 s after the host's:
+        // the host is around t = 2.0 s (x = 200 ft) when the guest is at 0.2 s.
+        let mut on_guest = Remote::default();
+        for k in 0..=40 {
+            let host_t = k as f32 * 0.05;
+            on_guest.push(host_t, state_at(host_t));
+        }
+        let s = on_guest.at(0.20).unwrap();
+        assert!(
+            s.position[0] > 185.0 && s.position[0] < 200.0,
+            "guest should see host near live 2.0 s (got x = {})",
+            s.position[0]
+        );
+
+        // Host whose local race clock is 1.8 s ahead of the guest's:
+        // the guest is at t = 0.20..0.30 s while the host is at 2.00..2.10 s.
+        let mut on_host = Remote::default();
+        on_host.push(0.20, state_at(0.20));
+        on_host.push(0.25, state_at(0.25));
+        on_host.push(0.30, state_at(0.30));
+        let a = on_host.at(2.10).unwrap().position[0];
+        let b = on_host.at(2.116).unwrap().position[0];
+        let c = on_host.at(2.132).unwrap().position[0];
+        assert!(
+            a > 20.0 && b > a && c > b && c < 30.0,
+            "host should smoothly interpolate between guest packets (got {a}, {b}, {c})"
+        );
+    }
+
+    #[test]
+    fn remote_stays_smooth_under_internet_jitter_and_bursts() {
+        let state_at = |t: f32| State {
+            position: [t * 80.0, 0.0, 0.0],
+            velocity: [80.0, 0.0, 0.0],
+            ..State::default()
+        };
+        let mut rm = Remote::default();
+        let mut sent_t = 10.0f32;
+        let send_dt = 1.0 / 30.0;
+        // Seed initial packets.
+        for _ in 0..4 {
+            rm.push(sent_t, state_at(sent_t));
+            sent_t += send_dt;
+        }
+        let mut local_t = 0.0f32;
+        let mut last_x = rm.at(local_t).unwrap().position[0];
+        // Simulate 120 render frames (2 seconds at 60 fps) where packets arrive
+        // unevenly in bursts (0, 0, 1, 0, 0, 2, 0, 1...) as over Wi-Fi/TCP.
+        let pattern = [0, 0, 1, 0, 0, 2, 0, 1, 0, 0, 0, 2];
+        for frame in 1..=120 {
+            local_t += 1.0 / 60.0;
+            for _ in 0..pattern[frame % pattern.len()] {
+                rm.push(sent_t, state_at(sent_t));
+                sent_t += send_dt;
+            }
+            let x = rm.at(local_t).unwrap().position[0];
+            let step = x - last_x;
+            assert!(
+                step > 0.8 && step < 2.0,
+                "frame {frame}: expected smooth ~1.33 ft step under jitter, got {step:.3} ft"
+            );
+            last_x = x;
+        }
     }
 }
