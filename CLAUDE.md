@@ -39,7 +39,7 @@ cd crates/mm2-viewer
 trunk serve --port 8080                               # dev server (unoptimised wasm)
 trunk build --release                                 # optimised build in dist/ (runs wasm-opt)
 
-python tools/serve_game.py "<game folder>" --port 8081  # then open :8080/?game=http://127.0.0.1:8081
+cargo run --release --bin serve-game -- "<game folder>" --port 8081  # then open :8080/?game=http://127.0.0.1:8081
 cargo run --release -p mm2-viewer -- "<game folder>"    # desktop viewer
 ```
 

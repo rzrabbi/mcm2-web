@@ -128,7 +128,7 @@ The web port is the work of this repository. In short:
 - the web page itself (`crates/mm2-viewer/index.html`): folder picker, file
   loading, saves and the Profiles panel (list, delete, zip backup and restore),
   sound unlocking, the custom pointer, the canvas sizing;
-- a development file server (`tools/serve_game.py`);
+- a development file server (`serve-game` in `crates/mm2-tools/src/serve.rs`);
 - free fonts that stand in for Arial (`crates/mm2-viewer/fonts/`);
 - many fixes and features listed in §6.
 
@@ -150,7 +150,7 @@ The web port is the work of this repository. In short:
 │   ├── mm2-formats/           File format readers (library)
 │   ├── mm2-physics/           Bike physics and race rules (library)
 │   ├── mm2-indeo/             Indeo 5 video decoder (library, LGPL)
-│   ├── mm2-tools/             Data inspection CLI (binary)
+│   ├── mm2-tools/             Data inspection CLI and serve-game dev server (binaries)
 │   └── mm2-viewer/            The game: engine + web page (binary)
 │       ├── index.html         The web page (Trunk entry point)
 │       ├── favicon.png
@@ -159,7 +159,6 @@ The web port is the work of this repository. In short:
 │       ├── build.rs           Puts the icon on the Windows .exe
 │       └── src/               About 50 modules, see §5.3
 ├── tools/
-│   ├── serve_game.py          Dev server: serves a local install to the page
 │   └── upscale-textures.sh    Optional Real-ESRGAN texture upscaling
 ```
 
@@ -275,7 +274,7 @@ tracks, one folder per event type). Menu text comes from the string tables in
 
 Debugging helpers on the page: `window.audioPeak()` returns the loudest recent
 sample, to confirm sound is playing. The development loader, `?game=<url>`, loads
-the files from `tools/serve_game.py` instead of the folder picker.
+the files from `serve-game` (`crates/mm2-tools/src/serve.rs`) instead of the folder picker.
 
 ### 5.3 The engine (`crates/mm2-viewer/src`)
 
@@ -529,7 +528,7 @@ release build to judge speed.
 **Skipping the folder picker while developing:**
 
 ```sh
-python tools/serve_game.py "/path/to/Motocross Madness 2" --port 8081
+cargo run --release --bin serve-game -- "/path/to/Motocross Madness 2" --port 8081
 # then open http://127.0.0.1:8080/?game=http://127.0.0.1:8081
 ```
 

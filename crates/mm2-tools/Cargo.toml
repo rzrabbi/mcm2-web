@@ -9,6 +9,10 @@ license.workspace = true
 name = "mm2-tools"
 path = "src/main.rs"
 
+[[bin]]
+name = "serve-game"
+path = "src/serve.rs"
+
 [dependencies]
 mm2-formats = { path = "../mm2-formats" }
 png = "0.18.1"

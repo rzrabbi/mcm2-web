@@ -100,7 +100,7 @@ To skip the folder picker while developing, serve your install locally and open 
 with `?game=`:
 
 ```sh
-python tools/serve_game.py "/path/to/Motocross Madness 2" --port 8081
+cargo run --release --bin serve-game -- "/path/to/Motocross Madness 2" --port 8081
 # then open http://127.0.0.1:8080/?game=http://127.0.0.1:8081
 ```
 
