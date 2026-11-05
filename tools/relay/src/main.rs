@@ -1,16 +1,17 @@
-use mm2_relay::{start, Relay};
+use mm2_relay::{healthcheck_http, start, Relay};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-const USAGE: &str = "usage: mm2-relay [--host 127.0.0.1] [--port 2108]";
+const USAGE: &str = "usage: mm2-relay [--host 127.0.0.1] [--port 2108] [--healthcheck]";
 
-fn parse_args() -> Result<(String, u16), String> {
+fn parse_args() -> Result<(String, u16, bool), String> {
     let mut host = std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let mut port: u16 = std::env::var("PORT")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(2108);
+    let mut healthcheck = false;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -18,6 +19,9 @@ fn parse_args() -> Result<(String, u16), String> {
         let a = args[i].as_str();
         match a {
             "-h" | "--help" => return Err(USAGE.to_string()),
+            "--healthcheck" => {
+                healthcheck = true;
+            }
             "--host" => {
                 i += 1;
                 host = args.get(i).ok_or("--host requires an address")?.clone();
@@ -38,18 +42,26 @@ fn parse_args() -> Result<(String, u16), String> {
         }
         i += 1;
     }
-    Ok((host, port))
+    Ok((host, port, healthcheck))
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let (host, port) = match parse_args() {
+    let (host, port, healthcheck) = match parse_args() {
         Ok(v) => v,
         Err(e) => {
             eprintln!("{e}");
             return ExitCode::from(2);
         }
     };
+
+    if healthcheck {
+        return if healthcheck_http(&host, port).await {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
 
     let trust_proxy = std::env::var("TRUST_PROXY").as_deref() == Ok("1");
     let origins: Vec<String> = std::env::var("ALLOWED_ORIGINS")
@@ -59,15 +71,13 @@ async fn main() -> ExitCode {
         .collect();
 
     let relay = Relay::new(trust_proxy, origins);
-    let srv = match start(&host, port, Some(Arc::clone(&relay))).await {
+    let _srv = match start(&host, port, Some(Arc::clone(&relay))).await {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error binding {host}:{port}: {e}");
             return ExitCode::FAILURE;
         }
     };
-
-    println!("relay on {}", srv.addr);
 
     let sweep_relay = Arc::clone(&relay);
     tokio::spawn(async move {
