@@ -144,7 +144,7 @@ The web port is the work of this repository. In short:
 ├── LICENSE-MIT, LICENSE-APACHE
 ├── .github/workflows/
 │   ├── ci.yml                 Tests + wasm check on every push / pull request
-│   └── pages.yml              Builds the site with Trunk, publishes to GitHub Pages
+│   └── pages.yml              Builds the static site with Trunk (GitHub Pages / Actions workflow)
 ├── assets/icon/               OpenMCM2 logo, app icon, .ico, social preview
 ├── crates/
 │   ├── mm2-formats/           File format readers (library)
@@ -153,12 +153,15 @@ The web port is the work of this repository. In short:
 │   ├── mm2-tools/             Data inspection CLI and serve-game dev server (binaries)
 │   └── mm2-viewer/            The game: engine + web page (binary)
 │       ├── index.html         The web page (Trunk entry point)
+│       ├── mp.js              Multiplayer tab and relay connection (copied into the build by Trunk)
 │       ├── favicon.png
 │       ├── fonts/             Liberation Sans (SIL OFL 1.1)
 │       ├── assets/ground/     ambientCG materials (CC0)
 │       ├── build.rs           Puts the icon on the Windows .exe
 │       └── src/               About 50 modules, see §5.3
+├── docs/multiplayer.md        Online multiplayer: how it plays, relay setup, troubleshooting
 ├── tools/
+│   ├── relay/                 The multiplayer relay crate (mm2-relay), its Dockerfile, compose file and tests
 │   └── upscale-textures.sh    Optional Real-ESRGAN texture upscaling
 ```
 
@@ -321,7 +324,7 @@ browser:
   task runs on a thread.
 - `FILL_MENUS` and the wide-layout code make the 640×480 menus fill any window
   shape without distorting text and icons.
-- `COMING_SOON` (in `frontend.rs`) greys out multiplayer in the browser (see §7).
+- Online multiplayer runs over an optional WebSocket relay server (`mm2-relay`, see §7 and `docs/multiplayer.md`).
 
 ### 5.5 Physics and rules (`crates/mm2-physics`)
 
@@ -423,9 +426,7 @@ All dated 2026-11-02 unless noted.
   percentile, at 1920×855 with maximum settings.
 
 **Not working or not available**
-- **Multiplayer in the browser:** the port's network code uses sockets, which
-  browsers do not offer. The Multiplayer pull-down shows "COMING SOON" and its
-  TCP/IP button is greyed out. Multiplayer still works in the desktop build.
+- **Multiplayer in the browser:** browsers do not offer raw TCP/UDP sockets, so online multiplayer runs over an optional lightweight WebSocket relay server (`mm2-relay` in `tools/relay`, see [docs/multiplayer.md](docs/multiplayer.md)). The static web build contains the client-side game engine only; players who want to race online run their own relay server (or join a friend's) and each player provides their own copy of the game files.
 - **Moto-Tag:** multiplayer only, so unavailable in the browser.
 - **Random gates (Baja):** the option shows but does nothing, in the desktop
   build too. The original's random gate generation has not been
@@ -472,8 +473,7 @@ These were found in the review on 2026-11-02:
    machine, so neither has been run.
 7. **Release profile:** the workspace has no `[profile.release]` tuning (LTO,
    `codegen-units = 1`) yet; it might shrink and speed up the wasm further.
-8. **Random gates** and **browser multiplayer** (see §7) remain the two missing
-   game features.
+8. **Random gates** remains the missing original game feature (its random generation algorithm has not been reverse-engineered yet); browser multiplayer is supported via the optional relay server (`mm2-relay`).
 
 ## 9. Licences and credits
 
@@ -565,7 +565,7 @@ and every pull request, runs the tests on Ubuntu and checks the wasm build.
 
 **Deployment** (`.github/workflows/pages.yml`): on every push to `main`, builds
 with `trunk build --release --public-url /mcm2-web/` and publishes `dist/` to
-GitHub Pages. Set **Settings → Pages → Source** to **GitHub Actions**. The
+static hosting (GitHub Pages, Cloudflare Pages, etc.). The
 repository must be named `mcm2-web`, or the `--public-url` changed to match. WebGPU
 needs HTTPS, which Pages provides.
 

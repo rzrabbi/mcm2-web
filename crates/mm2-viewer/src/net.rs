@@ -7,20 +7,43 @@
 //! race tape) and the host sends who is "it" in Moto-Tag (type 0x87),
 //! which a player asks the host for (0x87 + 0x8c) on touching IT.
 //!
+//! In the browser there are no sockets, so the same session runs over a
+//! WebSocket relay that the page holds (`mm2Net*` in `mp.js`): a room's
+//! host is the session's host, and each other player is a guest the relay
+//! numbers. Rooms are found by a code, or in the page's list of public
+//! rooms, where the local network's broadcast was.
+//!
 //! There is one session at a time, kept here for the lobby and the race
 //! to share.
 
-use std::io::{self, Read, Write};
+use std::io;
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::{Read, Write};
+#[cfg(not(target_arch = "wasm32"))]
 use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
+/// Where a session is: an address on the local network, or in the
+/// browser a relay room's code.
+#[cfg(not(target_arch = "wasm32"))]
+pub type Addr = SocketAddr;
+#[cfg(target_arch = "wasm32")]
+pub type Addr = String;
+
 /// The host's TCP port, and the UDP port sessions are found on.
+#[cfg(not(target_arch = "wasm32"))]
 pub const PORT: u16 = 28_220;
 /// What a finder asks and a host answers, before the session's name.
+#[cfg(not(target_arch = "wasm32"))]
 const ASK: &[u8] = b"MM2?";
+#[cfg(not(target_arch = "wasm32"))]
 const ANSWER: &[u8] = b"MM2!";
 /// The most players in a session (the lobby's eight names).
 pub const MAX_PLAYERS: usize = 8;
@@ -98,6 +121,12 @@ pub enum Msg {
         time: f32,
     },
     Leave,
+    /// The host is about to start this game: everyone gets the track first.
+    Prepare(GameInfo),
+    /// A player has the track (true), or could not get it (false); to the host.
+    Loaded(bool),
+    /// The host could not get the track: the start is off.
+    Abort,
 }
 
 /// Little-endian fields, strings with a length first.
@@ -243,6 +272,9 @@ impl Msg {
             } => w.u8(9).u8(*racer).f32(*time).u32(*kind as u32).bytes(data),
             Msg::Finished { racer, time } => w.u8(10).u8(*racer).f32(*time),
             Msg::Leave => w.u8(11),
+            Msg::Prepare(g) => w.u8(12).game(g),
+            Msg::Loaded(ok) => w.u8(13).u8(*ok as u8),
+            Msg::Abort => w.u8(14),
         };
         w.0
     }
@@ -275,6 +307,9 @@ impl Msg {
                 time: r.f32()?,
             },
             11 => Msg::Leave,
+            12 => Msg::Prepare(r.game()?),
+            13 => Msg::Loaded(r.u8()? != 0),
+            14 => Msg::Abort,
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -285,14 +320,39 @@ impl Msg {
     }
 }
 
-/// Sends one message: its length, then it.
-fn send(stream: &mut TcpStream, m: &Msg) -> io::Result<()> {
+/// One connection: a TCP stream, or in the browser the relay's pipe to
+/// that player (the page holds the socket).
+#[cfg(not(target_arch = "wasm32"))]
+type Conn = TcpStream;
+#[cfg(target_arch = "wasm32")]
+struct Conn;
+
+/// Sends one message to the player `id` (a guest only has the host, 0):
+/// on a socket its length, then it; over the relay each frame is a message.
+#[cfg(not(target_arch = "wasm32"))]
+fn encode_frame(m: &Msg) -> Vec<u8> {
     let body = m.encode();
-    let mut frame = (body.len() as u32).to_le_bytes().to_vec();
+    let mut frame = Vec::with_capacity(4 + body.len());
+    frame.extend_from_slice(&(body.len() as u32).to_le_bytes());
     frame.extend(body);
-    stream.write_all(&frame)
+    frame
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn send(stream: &mut Conn, _id: u8, m: &Msg) -> io::Result<()> {
+    stream.write_all(&encode_frame(m))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn send(_: &mut Conn, id: u8, m: &Msg) -> io::Result<()> {
+    if web::send_bytes(id, &m.encode()) {
+        Ok(())
+    } else {
+        Err(io::Error::new(io::ErrorKind::BrokenPipe, "relay closed"))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn receive(stream: &mut TcpStream) -> io::Result<Msg> {
     let mut len = [0u8; 4];
     stream.read_exact(&mut len)?;
@@ -310,12 +370,16 @@ fn receive(stream: &mut TcpStream) -> io::Result<Msg> {
 
 /// What the connections' threads tell the session.
 enum In {
-    Joined(u8, TcpStream),
+    Joined(u8, Conn),
     Got(u8, Msg),
     Gone(u8),
+    /// The relay dropped this player.
+    #[cfg(target_arch = "wasm32")]
+    Lost,
 }
 
 /// Reads a connection until it closes.
+#[cfg(not(target_arch = "wasm32"))]
 fn reader(id: u8, mut stream: TcpStream, tx: Sender<In>) {
     std::thread::spawn(move || {
         while let Ok(m) = receive(&mut stream) {
@@ -348,6 +412,12 @@ pub enum Heard {
         racer: u8,
         time: f32,
     },
+    /// The host will start this game once everyone has the track.
+    Prepare(GameInfo),
+    /// (Host) a player has the track, or could not get it.
+    Loaded { from: u8, ok: bool },
+    /// The host called the start off.
+    Abort,
     /// The host has gone; the session is over.
     Lost,
 }
@@ -360,14 +430,25 @@ pub struct Session {
     pub game: Option<GameInfo>,
     /// The connections: the host's to each player, a player's to the host
     /// (as 0).
-    peers: Vec<(u8, TcpStream)>,
+    peers: Vec<(u8, Conn)>,
+    #[cfg(not(target_arch = "wasm32"))]
     rx: Receiver<In>,
     stop: Arc<AtomicBool>,
+    #[cfg(target_arch = "wasm32")]
+    web: web::Link,
 }
 
 impl Session {
+    /// [`Session::host`]; the desktop game has no server browser, so
+    /// `public` means nothing here.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn host_as(name: &str, me: Player, _public: bool) -> io::Result<Session> {
+        Session::host(name, me)
+    }
+
     /// Hosts a session called `name` on [`PORT`] (or the next free port),
     /// answering finders on the local network.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn host(name: &str, me: Player) -> io::Result<Session> {
         let listener = (0..8)
             .find_map(|k| TcpListener::bind(("0.0.0.0", PORT + k)).ok())
@@ -409,13 +490,15 @@ impl Session {
     }
 
     /// Joins the session at `addr` as `me`.
-    pub fn join(addr: SocketAddr, me: Player) -> io::Result<Session> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn join(addr: Addr, me: Player) -> io::Result<Session> {
         let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(3))?;
         stream.set_nodelay(true)?;
         let (tx, rx) = channel();
         reader(0, stream.try_clone()?, tx);
         send(
             &mut stream,
+            0,
             &Msg::Hello {
                 name: me.name.clone(),
                 ride: me.ride.clone(),
@@ -432,15 +515,36 @@ impl Session {
         })
     }
 
-    /// Sends to everyone but `except`.
+    /// Sends to everyone but `except`. A TCP connection that fails is dropped; over the
+    /// relay a host sends one broadcast frame (`255` for every guest, or `0x80 | id` for
+    /// every guest except `id`) so the relay fans it out instead of the host uploading N
+    /// copies.
     fn broadcast(&mut self, m: &Msg, except: Option<u8>) {
-        let mut gone = Vec::new();
-        for (id, s) in &mut self.peers {
-            if Some(*id) != except && send(s, m).is_err() {
-                gone.push(*id);
-            }
+        if !self.peers.iter().any(|(id, _)| Some(*id) != except) {
+            return;
         }
-        self.peers.retain(|(id, _)| !gone.contains(id));
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let frame = encode_frame(m);
+            let mut gone = Vec::new();
+            for (id, s) in &mut self.peers {
+                if Some(*id) != except && s.write_all(&frame).is_err() {
+                    gone.push(*id);
+                }
+            }
+            self.peers.retain(|(id, _)| !gone.contains(id));
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let target = if !self.host {
+                0
+            } else if let Some(from) = except {
+                0x80 | from
+            } else {
+                255
+            };
+            let _ = web::send_bytes(target, &m.encode());
+        }
     }
 
     /// What this player does: to the host, or from the host to everyone.
@@ -476,7 +580,9 @@ impl Session {
     /// messages on.
     pub fn poll(&mut self) -> Vec<Heard> {
         let mut out = Vec::new();
-        while let Ok(i) = self.rx.try_recv() {
+        #[cfg(target_arch = "wasm32")]
+        self.web_status(&mut out);
+        for i in self.incoming() {
             match i {
                 In::Joined(id, stream) => {
                     if self.players.len() >= MAX_PLAYERS {
@@ -496,9 +602,17 @@ impl Session {
                     out.push(Heard::Players);
                 }
                 In::Got(from, m) => self.got(from, m, &mut out),
+                #[cfg(target_arch = "wasm32")]
+                In::Lost => out.push(Heard::Lost),
             }
         }
         out
+    }
+
+    /// What the connections' threads have passed on since last time.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn incoming(&mut self) -> Vec<In> {
+        self.rx.try_iter().collect()
     }
 
     fn got(&mut self, from: u8, m: Msg, out: &mut Vec<Heard>) {
@@ -512,9 +626,9 @@ impl Session {
                         ride,
                     });
                     if let Some((_, s)) = self.peers.iter_mut().find(|(id, _)| *id == from) {
-                        let _ = send(s, &Msg::Welcome { id: from });
+                        let _ = send(s, from, &Msg::Welcome { id: from });
                         if let Some(g) = &self.game {
-                            let _ = send(s, &Msg::Game(g.clone()));
+                            let _ = send(s, from, &Msg::Game(g.clone()));
                         }
                     }
                     let ps = Msg::Players(self.players.clone());
@@ -538,7 +652,8 @@ impl Session {
                     out.push(Heard::Players);
                 }
                 Msg::Chat(t) => {
-                    self.broadcast(&Msg::Chat(t.clone()), None);
+                    // The sender has already shown its own line.
+                    self.broadcast(&Msg::Chat(t.clone()), Some(from));
                     out.push(Heard::Chat(t));
                 }
                 Msg::Bike {
@@ -573,6 +688,7 @@ impl Session {
                     self.broadcast(&Msg::Finished { racer, time }, Some(from));
                     out.push(Heard::Finished { racer, time });
                 }
+                Msg::Loaded(ok) => out.push(Heard::Loaded { from, ok }),
                 Msg::Leave => {
                     self.peers.retain(|(p, _)| *p != from);
                     self.players.retain(|p| p.id != from);
@@ -596,6 +712,8 @@ impl Session {
                 out.push(Heard::Game(g));
             }
             Msg::Start { game, players } => out.push(Heard::Start { game, players }),
+            Msg::Prepare(g) => out.push(Heard::Prepare(g)),
+            Msg::Abort => out.push(Heard::Abort),
             Msg::Bike {
                 racer,
                 time,
@@ -622,6 +740,14 @@ impl Session {
         self.broadcast(&Msg::Leave, None);
         self.stop.store(true, Ordering::Relaxed);
         self.peers.clear();
+        // The room is the page's: a guest leaves it, but a host only leaves the lobby, and the
+        // room waits (parked) for it to come back.
+        #[cfg(target_arch = "wasm32")]
+        if self.host {
+            web::park();
+        } else {
+            web::leave();
+        }
     }
 }
 
@@ -632,6 +758,7 @@ impl Drop for Session {
 }
 
 /// Answers finders' broadcasts with the session's name and port.
+#[cfg(not(target_arch = "wasm32"))]
 fn answer_finders(name: String, port: u16, stop: Arc<AtomicBool>) {
     let Ok(sock) = UdpSocket::bind(("0.0.0.0", PORT)) else {
         eprintln!("cannot answer on UDP {PORT}; players must join by address");
@@ -657,11 +784,12 @@ fn answer_finders(name: String, port: u16, stop: Arc<AtomicBool>) {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Found {
     pub name: String,
-    pub addr: SocketAddr,
+    pub addr: Addr,
 }
 
 /// Looks for sessions: asks the local network, and any addresses in
 /// `MM2_JOIN` (comma separated), every second.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Finder {
     sock: Option<UdpSocket>,
     asked: Option<Instant>,
@@ -671,6 +799,7 @@ pub struct Finder {
     pub hosts: Vec<String>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Finder {
     pub fn new() -> Finder {
         let sock = UdpSocket::bind(("0.0.0.0", 0)).ok();
@@ -732,6 +861,333 @@ impl Finder {
     }
 }
 
+/// The browser's side: the page (`mp.js`) keeps the relay's WebSocket, so a
+/// room made on the start page is still open when the game starts. These
+/// are its global functions (`mm2Net*`).
+#[cfg(target_arch = "wasm32")]
+mod web {
+    use super::*;
+
+    #[wasm_bindgen::prelude::wasm_bindgen]
+    extern "C" {
+        /// "idle", "connecting", "hosting" or "joined".
+        #[wasm_bindgen(js_name = mm2NetState)]
+        fn state() -> String;
+        /// The room's code, or nothing.
+        #[wasm_bindgen(js_name = mm2NetCode)]
+        fn code() -> String;
+        /// Why the last attempt failed, or nothing.
+        #[wasm_bindgen(js_name = mm2NetError)]
+        fn error() -> String;
+        /// Opens a room as its host, or asks to join one; the answer comes
+        /// by `state`.
+        #[wasm_bindgen(js_name = mm2NetHost)]
+        fn open(name: &str, public: bool);
+        #[wasm_bindgen(js_name = mm2NetJoin)]
+        fn join(code: &str);
+        #[wasm_bindgen(js_name = mm2NetLeave)]
+        pub fn leave();
+        /// The host is in the game's lobby: its room opens to others (the page
+        /// takes the room back first if it must). `park` is the host leaving the
+        /// lobby: the room closes to others but is kept.
+        #[wasm_bindgen(js_name = mm2NetEnter)]
+        fn enter();
+        #[wasm_bindgen(js_name = mm2NetPark)]
+        pub fn park();
+        /// Lets go of the host's room nobody has entered (it lapses on the relay), so the
+        /// player can join or make another.
+        #[wasm_bindgen(js_name = mm2NetDetach)]
+        fn detach();
+        /// Hosting, but not in the lobby yet: no players, nobody can join.
+        #[wasm_bindgen(js_name = mm2NetParked)]
+        fn parked() -> bool;
+        /// Whether this is the room the browser keeps for its host.
+        #[wasm_bindgen(js_name = mm2NetOwns)]
+        fn owns_room(code: &str) -> bool;
+        /// True once if the start page asked for the lobby straight away.
+        #[wasm_bindgen(js_name = mm2NetWantLobby)]
+        fn want_lobby_page() -> bool;
+        /// The room code Join was pressed on at the start page (once): the lobby
+        /// joins it, so nobody is counted before they are in the lobby.
+        #[wasm_bindgen(js_name = mm2NetPendingJoin)]
+        fn pending_join_page() -> String;
+        /// A frame to guest `id` (a guest's goes to the host); false once
+        /// the relay is gone.
+        #[wasm_bindgen(js_name = mm2NetSend)]
+        fn send_frame(id: u8, data: &[u8]) -> bool;
+        /// The next thing heard, or nothing: a kind byte (1 a player came,
+        /// 2 went, 3 a frame, 4 the room is gone), the player's number, and
+        /// a frame's bytes.
+        #[wasm_bindgen(js_name = mm2NetNext)]
+        fn next() -> Vec<u8>;
+        /// The public rooms, a line each: code, tab, name, tab, notes, tab,
+        /// players.
+        #[wasm_bindgen(js_name = mm2NetRooms)]
+        fn rooms() -> String;
+    }
+
+    pub fn send_bytes(id: u8, body: &[u8]) -> bool {
+        send_frame(id, body)
+    }
+
+    /// Where this session stands with the page's room.
+    #[derive(Default)]
+    pub struct Link {
+        /// The host has told the lobby the room's code.
+        announced: bool,
+        /// A guest's Hello, sent once the room is joined.
+        hello: Option<Msg>,
+        /// A failed attempt has been reported.
+        failed: bool,
+    }
+
+    /// Whether the start page already put the player in a room: as its
+    /// host (true) or a guest (false).
+    static WANT: AtomicBool = AtomicBool::new(false);
+
+    /// The start page's "Enter lobby" was pressed: the lobby opens at once.
+    pub fn want_lobby() -> bool {
+        let want = want_lobby_page();
+        if want {
+            WANT.store(true, Ordering::Relaxed);
+        }
+        want
+    }
+
+    /// The room the start page's Join was pressed on, once.
+    pub fn pending_join() -> Option<String> {
+        Some(pending_join_page()).filter(|c| !c.is_empty())
+    }
+
+    /// Whether this is the room the browser keeps for its host.
+    pub fn owns(code: &str) -> bool {
+        owns_room(code)
+    }
+
+    /// Whether the start page already put the player in a room, and the
+    /// game opens it: as its host (true) or a guest (false). A host's room
+    /// the page has not opened yet (parked) is entered only when the start
+    /// page asked for it; otherwise it is the host's to pick in the list.
+    pub fn in_room() -> Option<bool> {
+        let want = WANT.swap(false, Ordering::Relaxed);
+        match state().as_str() {
+            "hosting" if want || !parked() => Some(true),
+            "joined" => Some(false),
+            _ => None,
+        }
+    }
+
+    pub fn room_code() -> String {
+        code()
+    }
+
+    impl Session {
+        /// Hosts a room: the page's, if it made one, or a new private room.
+        pub fn host(name: &str, me: Player) -> io::Result<Session> {
+            Self::host_as(name, me, false)
+        }
+
+        /// Hosts a room, listed in the server browser when `public`: the
+        /// page's, if it made one, or a new one.
+        pub fn host_as(name: &str, me: Player, public: bool) -> io::Result<Session> {
+            match state().as_str() {
+                "idle" => open(name, public),
+                // The page's room (no name given: the start page made it): it opens now.
+                "hosting" if name.is_empty() => {
+                    if parked() {
+                        enter();
+                    }
+                }
+                // A new room asked for by name, while an unentered one is kept: that one is
+                // let go, and this one is made as asked (name, public or private).
+                "hosting" if parked() => {
+                    detach();
+                    open(name, public);
+                }
+                "connecting" => {}
+                _ => {
+                    return Err(io::Error::new(io::ErrorKind::AlreadyExists, "in a room"));
+                }
+            }
+            Ok(Session::hosting(me))
+        }
+
+        /// Hosts the room the browser keeps for its host (its code and settings are
+        /// still there): the page takes it back if it must, and it opens.
+        pub fn host_resume(me: Player) -> io::Result<Session> {
+            match state().as_str() {
+                "idle" | "hosting" | "connecting" => enter(),
+                _ => {
+                    return Err(io::Error::new(io::ErrorKind::AlreadyExists, "in a room"));
+                }
+            }
+            Ok(Session::hosting(me))
+        }
+
+        fn hosting(me: Player) -> Session {
+            Session {
+                host: true,
+                me: 0,
+                players: vec![Player { id: 0, ..me }],
+                game: None,
+                peers: Vec::new(),
+                stop: Arc::new(AtomicBool::new(false)),
+                web: Link::default(),
+            }
+        }
+
+        /// Joins the room with this code, or the page's if it joined one.
+        pub fn join(addr: Addr, me: Player) -> io::Result<Session> {
+            match state().as_str() {
+                "idle" => join(&addr),
+                // The player's own room nobody has entered: let it go, and join this one.
+                "hosting" if parked() => {
+                    detach();
+                    join(&addr);
+                }
+                "joined" | "connecting" => {}
+                _ => {
+                    return Err(io::Error::new(io::ErrorKind::AlreadyExists, "in a room"));
+                }
+            }
+            Ok(Session {
+                host: false,
+                me: u8::MAX,
+                players: Vec::new(),
+                game: None,
+                peers: vec![(0, Conn)],
+                stop: Arc::new(AtomicBool::new(false)),
+                web: Link {
+                    hello: Some(Msg::Hello {
+                        name: me.name.clone(),
+                        ride: me.ride.clone(),
+                    }),
+                    ..Link::default()
+                },
+            })
+        }
+
+        /// The room's progress: its code to the lobby's chat, a guest's
+        /// Hello once in, and a failure as the session being lost.
+        pub(super) fn web_status(&mut self, out: &mut Vec<Heard>) {
+            let state = state();
+            if state == "idle" {
+                // It never opened, or closed under the lobby. The reason is said once; Lost
+                // every time, since a race (which drops it) may be the one listening.
+                if !self.web.failed {
+                    self.web.failed = true;
+                    let why = error();
+                    if !why.is_empty() {
+                        out.push(Heard::Chat(why));
+                    }
+                }
+                out.push(Heard::Lost);
+                return;
+            }
+            if self.host && !self.web.announced && state == "hosting" {
+                self.web.announced = true;
+                out.push(Heard::Chat(format!("Room code: {}", code())));
+            }
+            if !self.host && state == "joined" {
+                if let Some(hello) = self.web.hello.take() {
+                    let _ = send(&mut Conn, 0, &hello);
+                }
+            }
+        }
+
+        /// The frames and players the relay has passed on.
+        pub(super) fn incoming(&mut self) -> Vec<In> {
+            let mut out = Vec::new();
+            loop {
+                let e = next();
+                let Some((&kind, rest)) = e.split_first() else {
+                    break;
+                };
+                let id = rest.first().copied().unwrap_or(0);
+                match kind {
+                    1 => out.push(In::Joined(id, Conn)),
+                    2 => out.push(In::Gone(id)),
+                    3 => {
+                        if let Ok(m) = Msg::decode(rest.get(1..).unwrap_or(&[])) {
+                            out.push(In::Got(id, m));
+                        }
+                    }
+                    4 => out.push(if self.host { In::Lost } else { In::Gone(0) }),
+                    _ => {}
+                }
+            }
+            out
+        }
+    }
+
+    /// Looks for rooms: the page's list of public rooms, and any codes
+    /// typed in the TCP/IP box.
+    pub struct Finder {
+        pub found: Vec<Found>,
+        /// Room codes typed in.
+        pub hosts: Vec<String>,
+        seen: String,
+    }
+
+    impl Finder {
+        pub fn new() -> Finder {
+            Finder {
+                found: Vec::new(),
+                hosts: Vec::new(),
+                seen: String::new(),
+            }
+        }
+
+        /// Whether the list changed.
+        pub fn tick(&mut self) -> bool {
+            let listed = rooms();
+            let key = format!("{listed}\n{}", self.hosts.join(","));
+            if key == self.seen {
+                return false;
+            }
+            self.seen = key;
+            let mut found: Vec<Found> = self
+                .hosts
+                .iter()
+                .map(|c| {
+                    let code: String = c
+                        .chars()
+                        .filter(|c| c.is_ascii_alphanumeric())
+                        .collect::<String>()
+                        .to_uppercase();
+                    Found {
+                        name: format!("Room {code}"),
+                        addr: code,
+                    }
+                })
+                .collect();
+            for line in listed.lines() {
+                let mut f = line.split('\t');
+                let (Some(code), Some(name)) = (f.next(), f.next()) else {
+                    continue;
+                };
+                let players = f.nth(1).unwrap_or("");
+                if found.iter().any(|r| r.addr == code) {
+                    continue;
+                }
+                found.push(Found {
+                    name: if players.is_empty() {
+                        name.to_string()
+                    } else {
+                        format!("{name} ({players})")
+                    },
+                    addr: code.to_string(),
+                });
+            }
+            self.found = found;
+            true
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub use web::{in_room, owns, pending_join, room_code, want_lobby, Finder};
+
 /// The session the lobby made, kept for the race.
 pub static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 
@@ -746,7 +1202,7 @@ pub fn set(s: Option<Session>) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 
@@ -788,6 +1244,10 @@ mod tests {
             Msg::Ride(ride),
             Msg::Chat("hi".into()),
             Msg::Game(game.clone()),
+            Msg::Prepare(game.clone()),
+            Msg::Loaded(true),
+            Msg::Loaded(false),
+            Msg::Abort,
             Msg::Start {
                 game,
                 players: vec![player],

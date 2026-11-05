@@ -66,6 +66,10 @@ const ENGINES: [&str; 5] = [
 /// Grey for a player who is not ready, white for one who is (BGR).
 const NOT_READY: i32 = 0x808080;
 const READY: i32 = 0xffffff;
+/// A Ready box's lettering once its player is ready (green); grey before.
+const READY_ON: i32 = 0x40d040;
+/// What the Ready boxes say; the game's own boxes have no caption, only a tooltip.
+const READY_TEXT: &str = "READY";
 
 /// The lobby's choices, kept across its pages and races.
 struct Game {
@@ -150,6 +154,47 @@ pub struct Multi {
     picked: Option<usize>,
     /// The host's game as last sent.
     sent: Option<GameInfo>,
+    /// The host's game as last heard, to apply again once a track list
+    /// that was still arriving is here.
+    told: Option<GameInfo>,
+    /// Events whose track files the browser is still fetching.
+    awaiting: Vec<EventKind>,
+    /// The browser's Internet choice: a room hosted now is public.
+    internet: bool,
+    /// A start waiting for everyone to have the track.
+    prep: Option<Prep>,
+    /// The players as last seen, to say who joined or left.
+    seen: Option<Vec<(u8, String)>>,
+}
+
+/// How long the host waits for every player to have the track, in seconds. A player
+/// who has not said by then is left out of the race.
+const PREP_SECONDS: f32 = 90.0;
+
+/// Before a network race: everyone checks that they have the track the host picked (each
+/// player has their own copy of the game, so a different version may lack it) and waits on
+/// a loading screen. The host then starts the race with the players who have it; one who
+/// lacks it, has left or does not answer is left out.
+/// Whether this player has the track the host named.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Have {
+    /// It is listed from this player's own game files.
+    Ready,
+    /// That event's tracks are still being read.
+    Loading,
+    /// They are all here and it is not one of them.
+    Failed,
+}
+
+struct Prep {
+    info: GameInfo,
+    started: f32,
+    /// (Host) players who said they have the track, and who said they could not.
+    ready: Vec<u8>,
+    failed: Vec<u8>,
+    /// (Guest) the host has been told.
+    told: bool,
+    screen: Option<Box<Dlg>>,
 }
 
 /// The Event page's controls a joined player may not change.
@@ -189,7 +234,7 @@ impl Multi {
         let (title, prompt) = (cx.ui.lang(5096), cx.ui.lang(5118));
         let kind =
             super::MsgBox::ask(cx.ui, &title, &prompt, [5095, 5094, 5084]).map(|b| Box::new(b.dlg));
-        Some(Multi {
+        let mut multi = Multi {
             view: View::HostJoin {
                 menu,
                 dlg,
@@ -207,7 +252,36 @@ impl Multi {
             finder: Some(net::Finder::new()),
             picked: None,
             sent: None,
-        })
+            told: None,
+            awaiting: Vec::new(),
+            internet: false,
+            prep: None,
+            seen: None,
+        };
+        // A room opened on the start page, or one its Join was pressed on: straight into
+        // its lobby. A pending join is made from here, so the player counts only now.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let entry = match net::in_room() {
+                Some(host) => Some((host, net::room_code())),
+                None => net::pending_join().map(|code| (false, code)),
+            };
+            if let Some((host, code)) = entry {
+                let me = multi.me(cx);
+                let session = if host {
+                    net::Session::host("", me)
+                } else {
+                    net::Session::join(code.clone(), me)
+                };
+                if let Ok(s) = session {
+                    net::set(Some(s));
+                    multi.session = code;
+                    multi.finder = None;
+                    multi.lobby(cx);
+                }
+            }
+        }
+        Some(multi)
     }
 
     /// This player as the session knows them.
@@ -299,10 +373,11 @@ impl Multi {
             let rdy = format!("ButRdyPlayer{i}");
             base.enable(&rdy, false);
             base.show(&rdy, p.is_some());
+            base.set_text(&rdy, READY_TEXT);
             base.set_color(
                 &rdy,
                 if p.is_some_and(|p| p.ready) {
-                    READY
+                    READY_ON
                 } else {
                     NOT_READY
                 },
@@ -356,6 +431,83 @@ impl Multi {
         })
     }
 
+    /// A small gold crown at the left of the host's name in the lobby's
+    /// player list.
+    fn draw_host_mark(&self, ui: &mut Ui, gfx: &mut Gfx) {
+        let View::Lobby { base, .. } = &self.view else {
+            return;
+        };
+        let Some((host, me, players)) = net::with(|s| (s.host, s.me, s.players.clone())) else {
+            return;
+        };
+        let name = if host {
+            "UserName".to_string()
+        } else {
+            let others = players.iter().filter(|p| p.id != me);
+            match others.enumerate().find(|(_, p)| p.id == 0) {
+                Some((i, _)) => format!("NamePlayer{}", i + 2),
+                None => return,
+            }
+        };
+        let Some(r) = base.rect_of(&name) else {
+            return;
+        };
+        let (x, y) = (r[0] + 5.0, (r[1] + r[3] / 2.0 - 4.0).round());
+        let gold = [1.0, 0.82, 0.2, 1.0];
+        let dark = [0.25, 0.15, 0.0, 1.0];
+        // Outline first, then the crown: a band under three points.
+        for (dx, dy, w, h, c) in [
+            (-1.0, 1.0, 14.0, 6.0, dark),
+            (-1.0, -1.0, 4.0, 4.0, dark),
+            (4.0, -1.0, 4.0, 4.0, dark),
+            (9.0, -1.0, 4.0, 4.0, dark),
+            (0.0, 2.0, 12.0, 4.0, gold),
+            (0.0, 0.0, 2.0, 3.0, gold),
+            (5.0, 0.0, 2.0, 3.0, gold),
+            (10.0, 0.0, 2.0, 3.0, gold),
+        ] {
+            ui.fill(gfx, [x + dx, y + dy, w, h], c);
+        }
+    }
+
+    /// In the browser an event's tracks arrive after it is chosen: once they
+    /// are here, the host's choice is applied again and the page filled.
+    fn track_files(&mut self, cx: &mut Cx) {
+        if self.awaiting.is_empty() {
+            return;
+        }
+        // Only the event on screen is waited for: the page drops the fetch of a folder
+        // it was asked to leave for another, and asking for several at once would make
+        // it drop each in turn.
+        let shown: Vec<EventKind> = if self.game.event == EventKind::Tag {
+            TAG_TRACKS.to_vec()
+        } else {
+            vec![self.game.event]
+        };
+        self.awaiting.retain(|e| shown.contains(e));
+        let game = cx.ui.game().to_path_buf();
+        let before = self.awaiting.len();
+        self.awaiting
+            .retain(|e| !crate::platform::fs::ensure_folder(game.join(e.folder())));
+        if self.awaiting.len() == before {
+            return;
+        }
+        if Self::guest() {
+            if let Some(g) = self.told.clone() {
+                self.apply_game(cx.ui, &g);
+            }
+        }
+        if let View::Lobby {
+            tab, sub: None, ..
+        } = &self.view
+        {
+            let tab = *tab;
+            if tab == 0 || tab == 3 {
+                self.page(cx, tab);
+            }
+        }
+    }
+
     fn player(cx: &Cx) -> String {
         let name = cx.user.profile.name.trim();
         if name.is_empty() { "Player" } else { name }.to_string()
@@ -387,6 +539,9 @@ impl Multi {
         d.set_text("OKButton", cx.ui.lang(5097));
         d.set_text("CancelButton", cx.ui.lang(5084));
         d.set_text("TxtPrompt", cx.ui.lang(2201));
+        // In the browser it is a room's code that finds it.
+        #[cfg(target_arch = "wasm32")]
+        d.set_text("TxtPrompt", "Room code:");
         if let Some(c) = d.ctl("EditBox") {
             c.max_len = 63;
             c.text = Some(String::new());
@@ -410,7 +565,11 @@ impl Multi {
             base.enable(&format!("ButRdyPlayer{i}"), false);
             base.set_color(&format!("ButRdyPlayer{i}"), NOT_READY);
         }
-        base.set_color("ButRdyUser", if self.ready { READY } else { NOT_READY });
+        base.set_text("ButRdyUser", READY_TEXT);
+        base.set_color(
+            "ButRdyUser",
+            if self.ready { READY_ON } else { NOT_READY },
+        );
         if let Some(c) = base.ctl("EditChat") {
             c.max_len = 60;
         }
@@ -490,6 +649,9 @@ impl Multi {
         let game = ui.game().to_path_buf();
         // In the browser the event's files may still be on their way.
         if !self.tracks.contains_key(&event) && !crate::platform::fs::ensure_folder(game.join(event.folder())) {
+            if !self.awaiting.contains(&event) {
+                self.awaiting.push(event);
+            }
             return Vec::new();
         }
         self.tracks
@@ -692,18 +854,14 @@ impl Multi {
             if Self::guest() || !net::with(|s| s.all_ready()).unwrap_or(false) {
                 return Go::Stay;
             }
+            if self.prep.is_some() {
+                return Go::Stay;
+            }
+            // Everyone gets the track first; `prepare` starts the race once they have.
             let info = self.game_info(cx.ui);
-            let players = net::with(|s| s.players.clone()).unwrap_or_default();
-            net::with(|s| {
-                s.say(Msg::Start {
-                    game: info.clone(),
-                    players: players.clone(),
-                })
-            });
-            return match self.net_setup(cx, &info, &players) {
-                Some(setup) => Go::Race(Box::new(setup)),
-                None => Go::Stay,
-            };
+            net::with(|s| s.say(Msg::Prepare(info.clone())));
+            self.begin_prep(cx, info);
+            return Go::Stay;
         }
         let g = &self.game;
         let event = g.event;
@@ -750,9 +908,13 @@ impl Multi {
         let heard = net::with(|s| s.poll()).unwrap_or_default();
         for h in heard {
             match h {
-                Heard::Players => self.fill_players(),
+                Heard::Players => {
+                    self.announce();
+                    self.fill_players();
+                }
                 Heard::Chat(line) => self.say(line),
                 Heard::Game(g) => {
+                    self.told = Some(g.clone());
                     self.apply_game(cx.ui, &g);
                     if let View::Lobby { tab, sub: None, .. } = &self.view {
                         let tab = *tab;
@@ -761,12 +923,45 @@ impl Multi {
                         }
                     }
                 }
+                Heard::Prepare(info) => {
+                    // Kept as the host's game, so it is applied again once a track list that
+                    // was still arriving is here (`track_files`).
+                    self.told = Some(info.clone());
+                    self.apply_game(cx.ui, &info);
+                    self.begin_prep(cx, info);
+                }
+                Heard::Loaded { from, ok } => {
+                    if let Some(p) = &mut self.prep {
+                        let list = if ok { &mut p.ready } else { &mut p.failed };
+                        if !list.contains(&from) {
+                            list.push(from);
+                        }
+                    }
+                }
+                Heard::Abort => {
+                    if self.prep.take().is_some() {
+                        self.say("The host does not have this track. The race is off.".to_string());
+                    }
+                }
                 Heard::Start { game, players } => {
+                    self.prep = None;
+                    let me = net::with(|s| s.me).unwrap_or(0);
+                    if !players.iter().any(|p| p.id == me) {
+                        // This player could not get the track in time.
+                        self.say("The race started without you.".to_string());
+                        continue;
+                    }
                     if let Some(setup) = self.net_setup(cx, &game, &players) {
                         return Go::Race(Box::new(setup));
                     }
                 }
                 Heard::Lost => {
+                    // The relay's close and the page's idle state can both say it: once.
+                    if net::with(|_| ()).is_none() {
+                        continue;
+                    }
+                    self.prep = None;
+                    self.seen = None;
                     net::set(None);
                     // "<session> has disconnected".
                     self.say(format!("{} {}", self.session, cx.ui.lang(3030)));
@@ -774,6 +969,9 @@ impl Multi {
                 }
                 _ => {}
             }
+        }
+        if self.prep.is_some() {
+            return self.prepare(cx);
         }
         // The host's choices go to everyone as they change.
         if net::with(|s| s.host).unwrap_or(false) {
@@ -784,6 +982,144 @@ impl Multi {
             }
         }
         Go::Stay
+    }
+
+    /// A line in the chat for each player who came or went since the list was last seen. A
+    /// guest's first list (everyone already there) is taken in silently.
+    fn announce(&mut self) {
+        let (host, me, now) = net::with(|s| {
+            let now: Vec<(u8, String)> = s.players.iter().map(|p| (p.id, p.name.clone())).collect();
+            (s.host, s.me, now)
+        })
+        .unwrap_or((false, 0, Vec::new()));
+        // The host starts alone, so the first player to come is news.
+        let before = self
+            .seen
+            .take()
+            .or_else(|| host.then(|| vec![(0, String::new())]));
+        if let Some(before) = before {
+            for (id, name) in &now {
+                if *id != me && !before.iter().any(|(i, _)| i == id) {
+                    self.say(format!("{name} joined the lobby."));
+                }
+            }
+            for (id, name) in &before {
+                if *id != me && !now.iter().any(|(i, _)| i == id) {
+                    self.say(format!("{name} left the lobby."));
+                }
+            }
+        }
+        self.seen = Some(now);
+    }
+
+    /// A start is under way: this player gets the track, on a loading screen.
+    fn begin_prep(&mut self, cx: &mut Cx, info: GameInfo) {
+        let screen = EventKind::from_number(info.event as u32)
+            .and_then(|e| Dlg::open(cx.ui, e.loading(), (0.0, 0.0)))
+            .map(Box::new);
+        self.prep = Some(Prep {
+            info,
+            started: cx.now,
+            ready: Vec::new(),
+            failed: Vec::new(),
+            told: false,
+            screen,
+        });
+    }
+
+    /// Each frame of a start under way. A guest tells the host once it has the track (or
+    /// cannot get it). The host starts the race once it and every other player has
+    /// reported, has failed or has left, or after `PREP_SECONDS`.
+    fn prepare(&mut self, cx: &mut Cx) -> Go {
+        let Some(mut prep) = self.prep.take() else {
+            return Go::Stay;
+        };
+        let host = net::with(|s| s.host).unwrap_or(true);
+        // The track the host named, found by its file (not by place in a list that may still
+        // be arriving): until it is listed, this player is still loading.
+        let event = EventKind::from_number(prep.info.event as u32).unwrap_or(self.game.event);
+        let (stem, course) = (prep.info.track.clone(), prep.info.course as usize);
+        let path = self
+            .tracks(cx.ui, event)
+            .iter()
+            .find(|t| {
+                t.course == course
+                    && t.path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .is_some_and(|s| s.eq_ignore_ascii_case(&stem))
+            })
+            .map(|t| t.path.clone());
+        let game = cx.game().to_path_buf();
+        let folders_here = if event == EventKind::Tag {
+            TAG_TRACKS
+                .iter()
+                .all(|e| crate::platform::fs::ensure_folder(game.join(e.folder())))
+        } else {
+            crate::platform::fs::ensure_folder(game.join(event.folder()))
+        };
+        let mine = match (path.is_some(), folders_here) {
+            (true, _) => Have::Ready,
+            (false, true) => Have::Failed,
+            (false, false) => Have::Loading,
+        };
+        let waited = cx.now - prep.started;
+        if !host {
+            match mine {
+                Have::Ready if !prep.told => {
+                    net::with(|s| s.say(Msg::Loaded(true)));
+                    prep.told = true;
+                }
+                Have::Failed => {
+                    net::with(|s| s.say(Msg::Loaded(false)));
+                    self.say("Your game does not have this track. You will sit this race out.".to_string());
+                    return Go::Stay;
+                }
+                _ => {}
+            }
+            // The host's start never came (it has gone, or lost track of us).
+            if waited > PREP_SECONDS + 60.0 {
+                self.say("The race did not start.".to_string());
+                return Go::Stay;
+            }
+            self.prep = Some(prep);
+            return Go::Stay;
+        }
+        // The host.
+        if mine == Have::Failed {
+            net::with(|s| s.say(Msg::Abort));
+            self.say("Your game does not have this track. The race is off.".to_string());
+            return Go::Stay;
+        }
+        let players = net::with(|s| s.players.clone()).unwrap_or_default();
+        let waiting = |p: &&Player| {
+            p.id != 0 && !prep.ready.contains(&p.id) && !prep.failed.contains(&p.id)
+        };
+        let pending = players.iter().filter(waiting).count();
+        if mine != Have::Ready || (pending > 0 && waited < PREP_SECONDS) {
+            self.prep = Some(prep);
+            return Go::Stay;
+        }
+        // Start with the players who have the track.
+        let (going, left): (Vec<Player>, Vec<Player>) = players
+            .into_iter()
+            .partition(|p| p.id == 0 || prep.ready.contains(&p.id));
+        for p in &left {
+            let line = format!("{} does not have the track and is left out.", p.name);
+            net::with(|s| s.say(Msg::Chat(line.clone())));
+            self.say(line);
+        }
+        let info = prep.info;
+        net::with(|s| {
+            s.say(Msg::Start {
+                game: info.clone(),
+                players: going.clone(),
+            })
+        });
+        match self.net_setup(cx, &info, &going) {
+            Some(setup) => Go::Race(Box::new(setup)),
+            None => Go::Stay,
+        }
     }
 
     /// Send, or Return in the chat box (`0x4f8790`).
@@ -820,10 +1156,28 @@ impl Multi {
             // LAN looks on the local network; Internet asks for the host.
             if clicked("ButLeft") {
                 *kind = None;
+                // In the browser LAN is a private room found by its code: ask
+                // for the code first, and list no public rooms.
+                #[cfg(target_arch = "wasm32")]
+                {
+                    self.internet = false;
+                    self.finder = None;
+                    *name = Self::address_box(cx).map(Box::new);
+                    *address = name.is_some();
+                }
             } else if clicked("ButMiddle") {
                 *kind = None;
-                *name = Self::address_box(cx).map(Box::new);
-                *address = name.is_some();
+                // In the browser Internet is the server browser: the public
+                // rooms are listed at once, with no code to type.
+                #[cfg(target_arch = "wasm32")]
+                {
+                    self.internet = true;
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    *name = Self::address_box(cx).map(Box::new);
+                    *address = name.is_some();
+                }
             } else if clicked("ButRight") {
                 return Go::Back;
             }
@@ -837,6 +1191,27 @@ impl Multi {
                     .get("EditBox")
                     .and_then(|c| c.text.clone())
                     .unwrap_or_default();
+                // A LAN room code in the browser goes straight into that room.
+                #[cfg(target_arch = "wasm32")]
+                if !host.trim().is_empty() {
+                    let code = host.trim().to_string();
+                    // The code of the room this browser keeps for its host: back as its host.
+                    let session = if net::owns(&code) {
+                        net::Session::host_resume(self.me(cx))
+                    } else {
+                        net::Session::join(code.clone(), self.me(cx))
+                    };
+                    match session {
+                        Ok(s) => {
+                            net::set(Some(s));
+                            self.session = format!("Room {}", code.to_uppercase());
+                            self.finder = None;
+                            self.lobby(cx);
+                        }
+                        Err(e) => eprintln!("joining {code}: {e}"),
+                    }
+                    return Go::Stay;
+                }
                 if let (false, Some(f)) = (host.trim().is_empty(), &mut self.finder) {
                     f.hosts.push(host.trim().to_string());
                 }
@@ -849,7 +1224,9 @@ impl Multi {
                     .unwrap_or_default();
                 if !session.trim().is_empty() {
                     self.session = session.trim().to_string();
-                    match net::Session::host(&self.session, self.me(cx)) {
+                    // Internet rooms are public (the server browser lists
+                    // them); LAN rooms are private, found only by their code.
+                    match net::Session::host_as(&self.session, self.me(cx), self.internet) {
                         Ok(s) => net::set(Some(s)),
                         Err(e) => eprintln!("hosting {}: {e}", self.session),
                     }
@@ -877,7 +1254,16 @@ impl Multi {
                 .picked
                 .and_then(|i| self.finder.as_ref()?.found.get(i).cloned());
             if let Some(f) = found {
-                match net::Session::join(f.addr, self.me(cx)) {
+                // The host's own room (kept while it was out of the lobby) is taken back as its host.
+                #[cfg(target_arch = "wasm32")]
+                let session = if net::owns(&f.addr) {
+                    net::Session::host_resume(self.me(cx))
+                } else {
+                    net::Session::join(f.addr.clone(), self.me(cx))
+                };
+                #[cfg(not(target_arch = "wasm32"))]
+                let session = net::Session::join(f.addr.clone(), self.me(cx));
+                match session {
                     Ok(s) => {
                         net::set(Some(s));
                         self.session = f.name;
@@ -948,11 +1334,16 @@ impl Multi {
                     }
                     "butrdyuser" => {
                         self.ready = !self.ready;
-                        base.set_color("ButRdyUser", if self.ready { READY } else { NOT_READY });
+                        base.set_color(
+                            "ButRdyUser",
+                            if self.ready { READY_ON } else { NOT_READY },
+                        );
                         let r = self.ready;
                         net::with(|s| s.say(Msg::Ready(r)));
                         if self.ready {
+                            // Everyone in the session hears who is ready.
                             let line = cx.ui.lang(5331).replace("%s", &Self::player(cx));
+                            net::with(|s| s.say(Msg::Chat(line.clone())));
                             self.say(line);
                         }
                     }
@@ -1070,7 +1461,14 @@ impl Screen for Multi {
                 None => vec![menu, dlg],
             },
             View::Lobby { sub: Some(s), .. } => s.layers(),
-            View::Lobby { base, page, .. } => vec![base, page],
+            View::Lobby { base, page, .. } => {
+                let mut layers: Vec<&mut Dlg> = vec![base, page];
+                // The loading screen while everyone gets the track.
+                if let Some(d) = self.prep.as_mut().and_then(|p| p.screen.as_mut()) {
+                    layers.push(d);
+                }
+                layers
+            }
         }
     }
 
@@ -1078,11 +1476,14 @@ impl Screen for Multi {
         match &self.view {
             View::HostJoin { .. } => true,
             View::Lobby { sub: Some(s), .. } => s.modal(),
-            View::Lobby { .. } => false,
+            View::Lobby { .. } => self.prep.is_some(),
         }
     }
 
     fn event(&mut self, cx: &mut Cx, e: Event) -> Go {
+        if self.prep.is_some() {
+            return Go::Stay;
+        }
         match self.view {
             View::HostJoin { .. } => self.host_join_event(cx, e),
             View::Lobby { .. } => self.lobby_event(cx, e),
@@ -1090,6 +1491,9 @@ impl Screen for Multi {
     }
 
     fn escape(&mut self, cx: &mut Cx) -> Go {
+        if self.prep.is_some() {
+            return Go::Stay;
+        }
         match &mut self.view {
             View::HostJoin { name: Some(_), .. } => {
                 if let View::HostJoin { name, address, .. } = &mut self.view {
@@ -1166,6 +1570,7 @@ impl Screen for Multi {
                 return go;
             }
         }
+        self.track_files(cx);
         self.hear(cx)
     }
 
@@ -1221,8 +1626,10 @@ impl Screen for Multi {
                 }
             }
         }
+        self.draw_host_mark(ui, gfx);
         for d in self.layers() {
             d.draw_list(ui, gfx);
         }
     }
+
 }

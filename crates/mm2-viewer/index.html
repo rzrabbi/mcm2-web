@@ -7,6 +7,11 @@
   <meta name="description" content="Play Motocross Madness 2 in your browser with your own copy of the game. A WebAssembly and WebGPU port of the openmcm2 engine." />
   <link data-trunk rel="icon" href="favicon.png" />
   <link data-trunk rel="copy-dir" href="fonts" />
+  <link data-trunk rel="copy-file" href="mp.js" />
+  <!-- Online multiplayer needs a relay server (docs/multiplayer.md). Put its address here to make it the
+       page's default (for example wss://example.com/mp, or /mp for one behind this page's own server);
+       players can also enter one under Multiplayer, or give ?relay= in the address. -->
+  <meta name="mm2-relay" content="" />
   <link data-trunk rel="rust" data-bin="mm2-viewer" data-cargo-no-default-features data-cargo-features="audio,gamepad" />
   <script>
     // Browsers keep sound off until the page has been clicked or a key pressed.
@@ -55,11 +60,15 @@
        with a bevel, light-blue menu text, gold chain trim and a silver arrow pointer. */
     :root { --bg: #0a0916; --steel-hi: #d4d9ee; --steel: #98a1c8; --steel-lo: #5d6794; --navy: #0b1a45; --blue: #8db6ff;
       --text: #dfe6ff; --muted: #9ba6cf; --gold: #c9a92d; --gold-lo: #8a741c; }
+    #setup, #setup *, #setup *::before, #setup *::after { box-sizing: border-box; }
+    #setup ::selection { background: #2f55d8; color: #fff; }
     html, body, #setup { cursor: url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27 viewBox=%270 0 24 24%27%3E%3Cpath d=%27M3 2 L3 19 L8 14.5 L11.5 22 L14.5 20.6 L11 13.2 L18 13 Z%27 fill=%27%23e6e9f8%27 stroke=%27%2305050f%27 stroke-width=%271.4%27 stroke-linejoin=%27round%27/%3E%3C/svg%3E") 3 2, default; }
-    #setup button, #setup summary, #setup a, #setup label { cursor: url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27 viewBox=%270 0 24 24%27%3E%3Cpath d=%27M3 2 L3 19 L8 14.5 L11.5 22 L14.5 20.6 L11 13.2 L18 13 Z%27 fill=%27%23f0d870%27 stroke=%27%2305050f%27 stroke-width=%271.4%27 stroke-linejoin=%27round%27/%3E%3C/svg%3E") 3 2, pointer; }
+    #setup button, #setup summary, #setup a, #setup label, #setup select { cursor: url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2724%27 height=%2724%27 viewBox=%270 0 24 24%27%3E%3Cpath d=%27M3 2 L3 19 L8 14.5 L11.5 22 L14.5 20.6 L11 13.2 L18 13 Z%27 fill=%27%23f0d870%27 stroke=%27%2305050f%27 stroke-width=%271.4%27 stroke-linejoin=%27round%27/%3E%3C/svg%3E") 3 2, pointer; }
     #setup { position: fixed; inset: 0; overflow-y: auto; color: var(--text); font-family: Arial, "Liberation Sans", Helvetica, sans-serif;
-      background: radial-gradient(ellipse at 50% 35%, #1b1740 0%, #0d0b22 55%, #07060f 100%); }
-    #setup .wrap { max-width: 34rem; margin: 0 auto; padding: 10vh 1.25rem 2.5rem; line-height: 1.5; }
+      background: radial-gradient(ellipse at 50% 35%, #1b1740 0%, #0d0b22 55%, #07060f 100%);
+      scrollbar-width: thin; scrollbar-color: var(--steel-lo) #07060f; }
+    #setup :focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+    #setup .wrap { max-width: 34rem; margin: 0 auto; padding: 8vh 1.25rem 2.5rem; line-height: 1.5; }
     #setup h1 { margin: 0; line-height: 1; font-style: italic; text-transform: uppercase; }
     #setup h1 .game { display: block; white-space: nowrap; font-size: clamp(1.45rem, 6.4vw, 2.3rem); font-weight: 900; letter-spacing: -.01em;
       color: #eef1ff; text-shadow: 0 2px 0 #55609a, 0 0 14px #2f55d8, 0 0 28px #1d3aa8; }
@@ -72,7 +81,7 @@
     #setup .card { padding: 6px; border-radius: 3px; border-top: 2px solid #f2f4ff; border-left: 2px solid #e1e5f7;
       border-right: 2px solid #4b5584; border-bottom: 2px solid #3c4470;
       background: linear-gradient(#aab2d6, #707ba8); box-shadow: 0 8px 28px #000a, 0 0 0 1px #05050f; }
-    #setup .screen { padding: 1.25rem 1.3rem 1.3rem; border: 1px solid #040a22; border-radius: 2px;
+    #setup .screen { padding: 1.25rem 1.35rem 1.35rem; border: 1px solid #040a22; border-radius: 2px;
       background: repeating-linear-gradient(#0b1a45 0 2px, #0a1840 2px 4px); box-shadow: inset 0 0 18px #000b; }
     #setup .steps { margin: 0 0 1.2rem; padding: 0; list-style: none; display: grid; gap: .55rem; }
     #setup .steps li { display: flex; gap: .75rem; align-items: baseline; color: var(--blue); }
@@ -82,60 +91,70 @@
     #setup code { background: #060f30; padding: .05em .35em; border: 1px solid #1d2e6a; border-radius: 2px; font-size: .9em; color: #b5cdff; }
     #setup input[type=file] { display: none; }
     /* Buttons: a flat steel face with a bevel and dark lettering, as on the OK buttons. */
-    #setup .btn { display: block; width: 100%; margin-top: 1rem; padding: .8rem 1rem; font: inherit; font-size: 1rem; font-weight: 700;
-      letter-spacing: .04em; text-transform: uppercase; color: #0a0a18; text-shadow: 0 1px 0 #f4f6ff;
+    #setup .btn { display: block; width: 100%; margin-top: 1rem; padding: .75rem 1rem; font: inherit; font-size: .95rem; font-weight: 700;
+      letter-spacing: .05em; text-transform: uppercase; color: #0a0a18; text-shadow: 0 1px 0 #f4f6ff;
       background: linear-gradient(#e6e9f8, #a3abcf); border-radius: 2px; border-top: 2px solid #fff; border-left: 2px solid #f1f3ff;
-      border-right: 2px solid #4b5584; border-bottom: 2px solid #3c4470; box-shadow: 0 2px 0 #05050f; }
+      border-right: 2px solid #4b5584; border-bottom: 2px solid #3c4470; box-shadow: 0 2px 0 #05050f;
+      transition: background .12s, box-shadow .12s, transform .06s; }
     #setup .btn:hover:not(:disabled) { background: linear-gradient(#fff6c8, #e0c04a); box-shadow: 0 0 12px #e0c04a88, 0 2px 0 #05050f; }
     #setup .btn:active:not(:disabled) { transform: translateY(1px); border-top-color: #4b5584; border-left-color: #4b5584;
       border-right-color: #f1f3ff; border-bottom-color: #fff; }
     #setup .btn:disabled { opacity: .45; }
-    #setup .link { display: block; margin: .9rem auto 0; padding: 0; font: inherit; font-size: .88rem; color: #ffd966; background: none;
-      border: 0; text-decoration: underline; text-underline-offset: 2px; }
+    #setup .link { display: block; margin: .85rem auto 0; padding: 0; font: inherit; font-size: .88rem; color: #ffd966; background: none;
+      border: 0; text-decoration: underline; text-underline-offset: 3px; transition: color .15s; }
+    #setup .link:hover:not(:disabled) { color: #fff1b8; }
+    #setup .link:disabled { opacity: .45; }
     #setup.dragging .card:has(#choose) { outline: 2px dashed var(--gold); outline-offset: 4px; }
     #setup [hidden] { display: none !important; }
-    #setup .hint { margin: 1rem 0 0; font-size: .82rem; color: #6f7cae; }
-    #setup details { margin-top: 1.4rem; color: var(--muted); font-size: .92rem; }
-    #setup summary { color: var(--blue); }
-    #setup details p { margin: .6rem 0 0; }
+    #setup .hint { margin: 1rem 0 0; font-size: .84rem; line-height: 1.45; color: #8896c7; }
+    #setup details { margin-top: 1.4rem; color: var(--muted); font-size: .9rem; }
+    #setup summary { color: var(--blue); font-weight: 700; letter-spacing: .02em; transition: color .15s; }
+    #setup summary:hover { color: #b8d2ff; }
+    #setup details p { margin: .55rem 0 0; }
     #setup a { color: #ffd966; text-underline-offset: 2px; }
-    #setup .foot { margin-top: 2rem; padding-top: .8rem; border-top: 2px dotted var(--gold-lo); font-size: .76rem; color: #6f7cae; }
+    #setup a:hover { color: #fff1b8; }
+    #setup .foot { margin-top: 2rem; padding-top: .8rem; border-top: 2px dotted var(--gold-lo); font-size: .76rem; color: #8896c7; }
     #warn { display: none; margin-bottom: 1rem; padding: .8rem 1rem; border-radius: 2px; background: #3a1d1d; border: 1px solid #7a3232; color: #ffb4b4; }
     #warn .head { margin: 0 0 .5rem; font-weight: 700; letter-spacing: .2em; text-transform: uppercase; }
     #warn .problem + .problem { margin-top: .6rem; }
     #warn .problem p { margin: .25rem 0 0; font-size: .9rem; }
     #warn .problem code { display: block; margin-top: .3rem; font-size: .75rem; letter-spacing: .08em; opacity: .7; }
-    #status { margin-top: .9rem; min-height: 1.4em; color: var(--blue); text-align: center; }
+    #status { margin-top: .85rem; min-height: 1.4em; color: var(--blue); text-align: center; font-variant-numeric: tabular-nums; }
+    #status:empty { display: none; }
+    #setup .screen:has(.steps[hidden]) #status { margin-top: 0; font-weight: 700; letter-spacing: .03em; }
     /* Drawn at 1920x1080 whatever the window; fit() scales it to the window. */
     #mm2-canvas { display: none; position: fixed; left: 0; top: 0; outline: none; transform-origin: 0 0; }
-    .err { color: #f88; }
+    .err { color: #ff9a9a; }
     /* The graphics panel: the game's own drawing, or the port's enhanced one. */
     #setup .gfx { margin-top: 1.2rem; }
-    #setup h2 { margin: 0 0 .8rem; font-size: .9rem; letter-spacing: .3em; text-transform: uppercase; color: var(--blue); }
+    #setup h2 { margin: 0 0 .65rem; font-size: .92rem; letter-spacing: .28em; text-transform: uppercase; color: var(--blue); }
     #setup .modes { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; }
-    #setup .modes label { display: grid; grid-template-columns: auto 1fr; column-gap: .5rem; align-items: center; padding: .6rem .7rem;
-      border: 1px solid #1d2e6a; border-radius: 2px; background: #060f30; }
-    #setup .modes label:has(input:checked) { border-color: var(--gold); box-shadow: 0 0 10px #e0c04a44; }
-    #setup .modes small, #setup .checks small { display: block; color: var(--muted); font-size: .8rem; line-height: 1.35; }
+    #setup .modes label { display: grid; grid-template-columns: auto 1fr; column-gap: .55rem; align-items: center; padding: .6rem .75rem;
+      border: 1px solid #24387d; border-radius: 2px; background: #060f30; transition: border-color .15s, box-shadow .15s; }
+    #setup .modes label:hover { border-color: #3854b0; }
+    #setup .modes label:has(input:checked) { border-color: var(--gold); box-shadow: 0 0 10px #e0c04a33; }
+    #setup .modes small, #setup .checks small { display: block; margin-top: .15rem; color: var(--muted); font-size: .8rem; line-height: 1.38; }
     #setup input[type=radio], #setup input[type=checkbox], #setup input[type=range] { accent-color: var(--gold); margin: .2rem 0 0; }
-    #setup .fields { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem .9rem; margin-top: 1rem; }
-    #setup .fields label { display: flex; flex-direction: column; gap: .2rem; font-size: .85rem; color: var(--muted); }
-    #setup .fields output { color: var(--text); }
-    #setup select { font: inherit; font-size: .9rem; color: var(--text); background: #060f30; border: 1px solid #1d2e6a;
-      border-radius: 2px; padding: .3rem .4rem; }
-    #setup .checks { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem .9rem; margin-top: 1.1rem; font-size: .9rem; }
-    #setup .checks label { display: grid; grid-template-columns: auto 1fr; column-gap: .45rem; align-items: start; }
+    #setup .modes input[type=radio] { margin: 0; }
+    #setup .fields { display: grid; grid-template-columns: 1fr 1fr; gap: .7rem .9rem; margin-top: 1rem; }
+    #setup .fields label { display: flex; flex-direction: column; gap: .28rem; font-size: .84rem; color: var(--muted); }
+    #setup .fields output, #setup .quality output { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
+    #setup select { height: 2.3rem; padding: 0 .55rem; font: inherit; font-size: .9rem; color: var(--text); background: #060f30;
+      border: 1px solid #24387d; border-radius: 2px; transition: border-color .15s, box-shadow .15s; }
+    #setup select:hover { border-color: #3854b0; }
+    #setup select:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold-lo); }
+    #setup .checks { display: grid; grid-template-columns: 1fr 1fr; gap: .55rem .9rem; margin-top: 1.05rem; font-size: .9rem; }
+    #setup .checks label { display: grid; grid-template-columns: auto 1fr; column-gap: .5rem; align-items: start; line-height: 1.35; }
     #setup .gfx .hint { margin-top: .9rem; }
-    #setup .game-gfx { margin-top: 1.1rem; }
-    #setup h3 { margin: 0; font-size: .8rem; letter-spacing: .2em; text-transform: uppercase; color: var(--blue); }
-    #setup .gfx .hint.tiny { margin-top: .7rem; font-size: .7rem; line-height: 1.35; }
+    #setup .game-gfx { margin-top: 1.15rem; padding-top: 1rem; border-top: 1px solid #16265c; }
+    #setup h3 { margin: 0; font-size: .78rem; font-weight: 700; letter-spacing: .2em; text-transform: uppercase; color: var(--blue); }
+    #setup .gfx .hint.tiny { margin-top: .7rem; font-size: .76rem; line-height: 1.4; }
     /* The Defaults buttons: the text just brightens under the pointer. */
     #setup .reset { transition: color .15s; }
     #setup .reset:hover { color: #fff1b8; }
     /* In Enhanced mode the one Defaults button below resets the game's options too. */
     #setup .gfx:has(#gfx-on:checked) #gg-reset { display: none; }
-    #setup .quality { display: flex; flex-direction: column; gap: .2rem; margin-top: 1rem; font-size: .85rem; color: var(--muted); }
-    #setup .quality output { color: var(--text); }
+    #setup .quality { display: flex; flex-direction: column; gap: .25rem; margin-top: 1rem; font-size: .84rem; color: var(--muted); }
     #setup .quality .ends { display: grid; grid-template-columns: auto 1fr auto; gap: .5rem; align-items: center; }
     #setup .quality input[type=range] { width: 100%; }
     @media (max-width: 30rem) { #setup .modes, #setup .fields, #setup .checks { grid-template-columns: 1fr; } }
@@ -143,27 +162,90 @@
     #setup .saves { margin-top: 1.2rem; }
     #setup .saves .hint.first { margin: 0 0 .9rem; }
     #setup .plist { list-style: none; margin: 0; padding: 0; display: grid; gap: .5rem; }
-    #setup .plist li { display: flex; align-items: center; gap: .8rem; padding: .55rem .7rem; border: 1px solid #1d2e6a;
+    #setup .plist li { display: flex; align-items: center; gap: .8rem; padding: .6rem .75rem; border: 1px solid #24387d;
       border-radius: 2px; background: #060f30; }
-    #setup .plist li.empty { display: block; color: var(--muted); border-style: dashed; }
+    #setup .plist li.empty { display: block; padding: .7rem .8rem; color: var(--muted); border-style: dashed; text-align: center; font-size: .86rem; }
     #setup .plist .who { flex: 1; min-width: 0; }
     #setup .plist .who b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-    #setup .plist .who small { color: var(--muted); font-size: .8rem; }
-    #setup .plist .link { display: inline; flex: none; margin: 0; }
+    #setup .plist .who small { display: block; margin-top: .1rem; color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums; }
+    #setup .plist .link { display: inline; flex: none; margin: 0; font-weight: 700; }
     #setup .plist .link.danger { color: #ff9c9c; }
+    #setup .plist .link.danger:hover:not(:disabled) { color: #ffc2c2; }
     #setup .saves .row { display: flex; gap: .6rem; margin-top: 1rem; }
-    #setup .saves .row .btn { margin-top: 0; padding: .6rem .5rem; font-size: .85rem; }
+    #setup .saves .row .btn { margin-top: 0; padding: .65rem .5rem; font-size: .84rem; }
     #setup .saves #saves-status { min-height: 1.2em; margin-top: .6rem; }
-    #setup .hint.err { color: #f88; }
-    #setup .saves .important { margin: 0 0 .9rem; padding: .5rem .7rem; font-size: .85rem; line-height: 1.4; color: #ffe9a6;
+    #setup .saves #saves-status:empty { display: none; }
+    #setup .hint.err { color: #ff9a9a; }
+    #setup .saves .important { margin: 0 0 .9rem; padding: .55rem .75rem; font-size: .84rem; line-height: 1.45; color: #ffe9a6;
       background: #2a2208; border: 1px solid var(--gold-lo); border-left: 3px solid var(--gold); border-radius: 2px; }
     #setup .saves .important b { color: #ffd966; text-transform: uppercase; letter-spacing: .1em; }
+    /* The tabs under the folder card: Multiplayer, Graphics and Profiles, one panel shown at a time. */
+    #setup .more { margin-top: 1.2rem; }
+    #setup .tabs { display: flex; gap: .35rem; }
+    #setup .tabs button { flex: 1; padding: .58rem .5rem; font: inherit; font-size: .8rem; font-weight: 700; letter-spacing: .09em;
+      text-transform: uppercase; color: #14182e; text-shadow: 0 1px 0 #e6eaf8; background: linear-gradient(#b8c0e0, #7c86b2);
+      border-radius: 3px 3px 0 0; border-top: 2px solid #e1e5f7; border-left: 2px solid #d4d9ee; border-right: 2px solid #4b5584;
+      border-bottom: 0; transition: background .12s, color .12s, box-shadow .12s; }
+    #setup .tabs button:hover { color: #0a0a18; text-shadow: 0 1px 0 #fff9db; background: linear-gradient(#fff6c8, #e0c04a); }
+    #setup .tabs button[aria-selected=true] { color: #0a0a18; text-shadow: 0 1px 0 #fff9db;
+      background: linear-gradient(#fff6c8, #e0c04a); border-top-color: #fff9db; border-left-color: #f5e28c;
+      box-shadow: 0 -2px 10px #e0c04a44; }
+    #setup .more:has(#gfx[hidden]) #tab-gfx { display: none; }
+    #setup .more .panel { display: none; margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
+    #setup .more .panel.on { display: block; }
+    /* The Multiplayer panel: the relay, your room or the host and join forms, and the server browser. */
+    #setup .mp .hint.first { margin: 0 0 .95rem; }
+    #setup .mpstats { margin: 0 0 .75rem; font-size: .82rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+      color: #ffd966; font-variant-numeric: tabular-nums; }
+    #setup .mpstats.off { color: #ff9c9c; }
+    #setup .mp h3 { margin: 1.2rem 0 .55rem; padding-top: .95rem; border-top: 1px solid #16265c; }
+    #setup .mprow { display: flex; flex-wrap: wrap; gap: .6rem; align-items: flex-end; }
+    #setup .mprow .field { flex: 1 1 12rem; min-width: 0; display: flex; flex-direction: column; gap: .28rem; font-size: .84rem; color: var(--muted); }
+    #setup .mp .btn.small { flex: none; display: inline-flex; align-items: center; justify-content: center;
+      width: auto; height: 2.4rem; margin: 0; padding: 0 1rem; font-size: .82rem; white-space: nowrap; }
+    #setup .mp input[type=text] { width: 100%; height: 2.4rem; padding: 0 .7rem; font: inherit; font-size: .95rem; color: var(--text);
+      background: #060f30; border: 1px solid #24387d; border-radius: 2px; box-shadow: inset 0 1px 3px #0008;
+      transition: border-color .15s, box-shadow .15s; }
+    #setup .mp input[type=text]::placeholder { color: #7889bd; opacity: 1; }
+    #setup .mp input[type=text]:hover { border-color: #3854b0; }
+    #setup .mp input[type=text]:focus { outline: none; border-color: var(--gold); box-shadow: inset 0 1px 3px #0008, 0 0 0 1px var(--gold-lo); }
+    #setup #mp-join-code { text-transform: uppercase; letter-spacing: .25em; font-weight: 700; font-variant-numeric: tabular-nums; }
+    #setup #mp-join-code::placeholder { font-weight: 400; }
+    #setup .mpcheck { grid-template-columns: 1fr; margin-top: .65rem; }
+    #setup .mproom { padding: .9rem 1rem 1rem; margin: .9rem 0 1rem; border: 1px solid var(--gold-lo); border-radius: 2px; background: #060f30; }
+    #setup .mproom h3 { margin: 0 0 .45rem; padding-top: 0; border-top: 0; }
+    #setup .mpcode { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .8rem; }
+    #setup .mpcode output { font-size: 2.1rem; font-weight: 900; line-height: 1.1; letter-spacing: .28em; color: #ffd966;
+      font-variant-numeric: tabular-nums; user-select: all; }
+    #setup .mp .row { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: .7rem; }
+    #setup .mp details { margin: 0 0 .1rem; }
+    #setup .mp details summary { font-size: .88rem; }
+    #setup .mp details #mp-relay-name { color: var(--text); font-weight: 400; font-variant-numeric: tabular-nums; }
+    #setup .mp details .hint { margin-top: .45rem; }
+    #setup .mp details .mprow { margin-top: .6rem; }
+    #setup .mp #mp-msg:empty { display: none; }
+    #setup .mp .hint.err, #setup .mp .err { color: #ff9a9a; }
+    @media (max-width: 24rem) { #setup .mprow .btn.small { width: 100%; } }
+    /* "Joining the lobby": shown from the moment Join or Enter lobby is pressed until the game takes over. */
+    #setup .mppop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 16px; background: #07060fd9; }
+    #setup .mppop .card { width: min(24rem, 100%); text-align: center; }
+    #setup .mppop .spin { width: 2.2rem; height: 2.2rem; margin: 0 auto .9rem; border: 3px solid #1d2e6a; border-top-color: #ffd966;
+      border-radius: 50%; animation: mpspin .9s linear infinite; }
+    #setup .mppop p { margin: 0 0 .4rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #ffd966; }
+    #setup .mppop .btn { margin-top: .8rem; }
+    @keyframes mpspin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { #setup .mppop .spin { animation: none; } }
     #fetching { position: fixed; left: 50%; bottom: 1rem; transform: translateX(-50%); padding: .4rem .8rem;
       background: #000c; border-radius: 4px; display: none; pointer-events: none; }
   </style>
 </head>
 <body>
-  <div id="setup"><main class="wrap">
+  <div id="setup">
+    <div id="mp-popup" class="mppop" role="alertdialog" aria-modal="true" aria-labelledby="mp-popup-text" hidden>
+      <div class="card"><div class="screen"><div class="spin" aria-hidden="true"></div><p id="mp-popup-text">Joining the lobby…</p>
+        <button id="mp-popup-cancel" class="btn" type="button">Cancel</button></div></div>
+    </div>
+    <main class="wrap">
     <canvas id="logo" role="img" aria-label="MCM 2 On Web"></canvas>
     <p class="lead">Play in your browser with your own copy of the game. Nothing is uploaded.</p>
 
@@ -181,7 +263,65 @@
       <div id="status">Loading the engine…</div>
     </div></section>
 
-    <section id="gfx" class="card gfx" hidden><div class="screen">
+    <div class="more">
+    <div class="tabs" role="tablist">
+      <button id="tab-mp" role="tab" aria-controls="mp" aria-selected="true">Multiplayer</button>
+      <button id="tab-gfx" role="tab" aria-controls="gfx" aria-selected="false">Graphics</button>
+      <button id="tab-saves" role="tab" aria-controls="saves" aria-selected="false">Profiles</button>
+    </div>
+
+    <section id="mp" class="card mp panel on" role="tabpanel" aria-labelledby="tab-mp"><div class="screen">
+      <h2>Multiplayer</h2>
+      <p id="mp-stats" class="mpstats">Checking the server…</p>
+      <p class="hint first">Race friends online, like a LAN party. One of you opens a room and shares its code; the others type it
+        in or pick the room from the list. Everyone needs their own copy of the game, and the same version. Rooms are only for
+        finding each other: your game files stay in your browser.</p>
+
+      <details id="mp-relay-box">
+        <summary>Relay server: <span id="mp-relay-name">not set</span></summary>
+        <p class="hint">Online play goes through a small relay server that you or a friend runs (see the README). Enter its address.</p>
+        <div class="mprow">
+          <label class="field">Address
+            <input id="mp-relay" type="text" placeholder="localhost:2108 or wss://example.com/mp" autocomplete="off" spellcheck="false" /></label>
+          <button id="mp-relay-save" class="btn small" type="button">Save</button>
+        </div>
+      </details>
+
+      <div id="mp-room" class="mproom" hidden>
+        <h3>Your room</h3>
+        <div class="mpcode"><output id="mp-code" aria-live="polite"></output>
+          <button id="mp-copy" class="btn small" type="button">Copy</button></div>
+        <p id="mp-room-name" class="hint"></p>
+        <div class="row"><button id="mp-enter" class="btn small" type="button" hidden>Enter lobby</button>
+          <button id="mp-leave" class="btn small" type="button">Leave room</button></div>
+      </div>
+
+      <div id="mp-forms">
+        <h3>Host a room</h3>
+        <div class="mprow">
+          <label class="field">Room name
+            <input id="mp-name" type="text" maxlength="32" placeholder="Moto Room" autocomplete="off" /></label>
+          <button id="mp-create" class="btn small" type="button">Create room</button>
+        </div>
+        <div class="checks mpcheck"><label><input id="mp-public" type="checkbox" />
+          <span>Show in the server browser<small>Anyone can see and join a public room. Otherwise only people with the code can.</small></span></label></div>
+      </div>
+      <div id="mp-joinbox">
+        <h3>Join with a code</h3>
+        <div class="mprow">
+          <label class="field">Room code
+            <input id="mp-join-code" type="text" maxlength="8" placeholder="K7QM2" autocomplete="off" autocapitalize="characters" spellcheck="false" /></label>
+          <button id="mp-join" class="btn small" type="button">Join</button>
+        </div>
+      </div>
+      <p id="mp-msg" class="hint" role="status" aria-live="polite"></p>
+
+      <h3>Server browser</h3>
+      <ul id="mp-list" class="plist"></ul>
+      <div class="row"><button id="mp-refresh" class="btn small" type="button">Refresh</button></div>
+    </div></section>
+
+    <section id="gfx" class="card gfx panel" role="tabpanel" aria-labelledby="tab-gfx" hidden><div class="screen">
       <h2>Graphics</h2>
       <div class="modes">
         <label><input type="radio" name="gfx-mode" value="original" id="gfx-off" checked />
@@ -240,7 +380,7 @@
       </div>
     </div></section>
 
-    <section id="saves" class="card saves"><div class="screen">
+    <section id="saves" class="card saves panel" role="tabpanel" aria-labelledby="tab-saves"><div class="screen">
       <h2>Profiles</h2>
       <p class="hint first">Your profiles, settings and records are kept in this browser. Clearing the browser's site data erases
         them, so export a backup to keep them safe.</p>
@@ -255,11 +395,14 @@
       <input id="saves-file" type="file" accept=".zip,application/zip" />
       <div id="saves-status" class="hint"></div>
     </div></section>
+    </div>
 
     <details>
       <summary>About this project</summary>
       <p>The game engine is a Rust program compiled to WebAssembly that draws with WebGPU. Your game files are read
          into memory in your browser and never leave your computer. Your profile and records are saved in the browser.</p>
+      <p>The Multiplayer tab is the one part that talks to a server: a small relay that passes the game's network packets
+         between players, and never sees your game files.</p>
       <p>Built on <a href="https://github.com/crspytopgn/openmcm2">openmcm2</a> 0.2.1 by crspytopgn, which provides the engine,
          physics, file formats and menus. The movie decoder is a port of <a href="https://ffmpeg.org">FFmpeg</a>'s
          Indeo 5 decoder by Maxim Poliakovski (LGPL). Ground materials are from <a href="https://ambientcg.com">ambientCG</a> (CC0).
@@ -272,6 +415,21 @@
   </main></div>
   <div id="fetching"></div>
   <canvas id="mm2-canvas" tabindex="0"></canvas>
+  <script src="mp.js"></script>
+  <script>
+    // The tabs under the folder card: one panel shown at a time. A panel the page keeps hidden (Graphics, until a
+    // game is loaded) hides its tab as well.
+    (() => {
+      const tabs = [["tab-mp", "mp"], ["tab-gfx", "gfx"], ["tab-saves", "saves"]];
+      const show = (id) => {
+        for (const [tab, panel] of tabs) {
+          document.getElementById(tab).setAttribute("aria-selected", String(panel === id));
+          document.getElementById(panel).classList.toggle("on", panel === id);
+        }
+      };
+      for (const [tab, panel] of tabs) document.getElementById(tab).addEventListener("click", () => show(panel));
+    })();
+  </script>
   <script>
     const status = document.getElementById("status");
     const pick = document.getElementById("pick");
@@ -985,6 +1143,7 @@
       const go = document.createElement("button");
       go.textContent = "Start game";
       go.className = "btn";
+      go.id = "start-game"; // the Multiplayer tab presses it to join a lobby
       status.after(go);
       go.after(change);
       change.hidden = false;

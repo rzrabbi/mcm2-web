@@ -1,0 +1,20 @@
+# The multiplayer relay: `docker compose up -d --build` in this folder.
+# It carries lobby and bike packets only, never game files. Put it behind HTTPS (see docs/multiplayer.md):
+# a page served over HTTPS can only use a wss:// relay.
+services:
+  mcm2-relay:
+    build: .
+    container_name: mcm2-relay
+    restart: unless-stopped
+    environment:
+      # Behind a reverse proxy: take the player's address from its X-Forwarded-For header.
+      TRUST_PROXY: "1"
+      # Page origins on other hosts that may connect, comma separated (this host is always allowed),
+      # for example the GitHub Pages site: https://you.github.io
+      ALLOWED_ORIGINS: ""
+      # How long a room nobody has entered is kept, in seconds.
+      PARK_SECONDS: "300"
+    ports:
+      # Localhost only: the reverse proxy reaches it. Use "2108:2108" for a quick test on a trusted
+      # network with no proxy.
+      - "127.0.0.1:2108:2108"
